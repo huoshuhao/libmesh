@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -72,9 +72,19 @@ public:
 
   /**
    * This method implements reading a mesh from a specified file.
+   *
+   * This should typically be called in parallel if
+   * is_parallel_format(), but should be called only on processor 0
+   * (after which a mesh broadcast() is called) otherwise.
    */
   virtual void read (const std::string &) = 0;
 
+  /**
+   * Returns true iff this mesh file format and input class are
+   * parallelized, so that all processors can read their share of the
+   * data at once.
+   */
+  bool is_parallel_format () const { return this->_is_parallel_format; }
 
 protected:
 
@@ -102,7 +112,6 @@ protected:
    */
   void skip_comment_lines (std::istream & in,
                            const char comment_start);
-
 
 private:
 
@@ -168,8 +177,7 @@ template <class MT>
 inline
 MT & MeshInput<MT>::mesh ()
 {
-  if (_obj == nullptr)
-    libmesh_error_msg("ERROR: _obj should not be nullptr!");
+  libmesh_error_msg_if(_obj == nullptr, "ERROR: _obj should not be nullptr!");
   return *_obj;
 }
 

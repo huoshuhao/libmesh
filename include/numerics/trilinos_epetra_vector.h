@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -26,6 +26,7 @@
 // Local includes
 #include "libmesh/numeric_vector.h"
 #include "libmesh/parallel.h"
+#include "libmesh/auto_ptr.h" // libmesh_make_unique
 
 // Trilinos includes
 #include "libmesh/ignore_warnings.h"
@@ -39,6 +40,7 @@
 // C++ includes
 #include <cstddef>
 #include <vector>
+#include <limits>
 
 // Forward declarations
 class Epetra_IntSerialDenseVector;
@@ -179,6 +181,8 @@ public:
 
   virtual NumericVector<T> & operator -= (const NumericVector<T> & v) override;
 
+  virtual NumericVector<T> & operator *= (const NumericVector<T> & v) override;
+
   virtual NumericVector<T> & operator /= (const NumericVector<T> & v) override;
 
   virtual void reciprocal() override;
@@ -249,6 +253,8 @@ public:
                                  const std::vector<numeric_index_type> & rows) const override;
 
   virtual void swap (NumericVector<T> & v) override;
+
+  virtual std::size_t max_allowed_id() const override;
 
   /**
    * \returns The raw Epetra_Vector pointer.
@@ -496,10 +502,11 @@ EpetraVector<T>::EpetraVector(Epetra_Vector & v,
   myFirstID_ = _vec->Map().MinMyGID();
   myNumIDs_ = _vec->Map().NumMyElements();
 
-  _map.reset(new Epetra_Map(_vec->GlobalLength(),
-                            _vec->MyLength(),
-                            0, // IndexBase = 0 for C/C++, 1 for Fortran.
-                            Epetra_MpiComm (this->comm().get())));
+  _map = libmesh_make_unique<Epetra_Map>
+    (_vec->GlobalLength(),
+     _vec->MyLength(),
+     0, // IndexBase = 0 for C/C++, 1 for Fortran.
+     Epetra_MpiComm (this->comm().get()));
 
   //Currently we impose the restriction that NumVectors==1, so we won't
   //need the LDA argument when calling ExtractView. Hence the "dummy" arg.
@@ -588,10 +595,11 @@ void EpetraVector<T>::init (const numeric_index_type n,
   libmesh_assert ((this->_type==SERIAL && n==my_n_local) ||
                   this->_type==PARALLEL);
 
-  _map.reset(new Epetra_Map(static_cast<int>(n),
-                            my_n_local,
-                            0,
-                            Epetra_MpiComm (this->comm().get())));
+  _map = libmesh_make_unique<Epetra_Map>
+    (static_cast<int>(n),
+     my_n_local,
+     0,
+     Epetra_MpiComm (this->comm().get()));
 
   _vec = new Epetra_Vector(*_map);
 
@@ -824,6 +832,17 @@ void EpetraVector<T>::swap (NumericVector<T> & other)
   std::swap(last_edit, v.last_edit);
   std::swap(ignoreNonLocalEntries_, v.ignoreNonLocalEntries_);
 }
+
+
+
+template <typename T>
+inline
+std::size_t EpetraVector<T>::max_allowed_id () const
+{
+  // Epetra_Vector seems to use hard-coded ints in its various indexing routines.
+  return std::numeric_limits<int>::max();
+}
+
 
 
 // Trilinos only got serious about const in version 10.4

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -24,10 +24,11 @@
 // Local includes
 #include "libmesh/libmesh.h"
 #include "libmesh/libmesh_common.h"
-#include "libmesh/auto_ptr.h" // deprecated
-#include "libmesh/id_types.h"
 #include "libmesh/reference_counted_object.h"
+#include "libmesh/id_types.h"
 #include "libmesh/parallel_object.h"
+#include "libmesh/enum_parallel_type.h"
+#include "libmesh/enum_matrix_build_type.h"
 
 // C++ includes
 #include <cstddef>
@@ -42,7 +43,10 @@ namespace libMesh
 template <typename T> class SparseMatrix;
 template <typename T> class DenseMatrix;
 class DofMap;
-namespace SparsityPattern { class Graph; }
+namespace SparsityPattern {
+  class Build;
+  class Graph;
+}
 template <typename T> class NumericVector;
 
 // This template helper function must be declared before it
@@ -95,7 +99,8 @@ public:
    */
   static std::unique_ptr<SparseMatrix<T>>
   build(const Parallel::Communicator & comm,
-        const SolverPackage solver_package = libMesh::default_solver_package());
+        const SolverPackage solver_package = libMesh::default_solver_package(),
+        const MatrixBuildType matrix_build_type = MatrixBuildType::AUTOMATIC);
 
   /**
    * \returns \p true if the matrix has been initialized,
@@ -104,10 +109,22 @@ public:
   virtual bool initialized() const { return _is_initialized; }
 
   /**
-   * Get a pointer to the \p DofMap to use.
+   * Set a pointer to the \p DofMap to use.  If a separate sparsity
+   * pattern is not being used, use the one from the DofMap.
+   *
+   * The lifetime of \p dof_map must exceed the lifetime of \p this.
    */
-  void attach_dof_map (const DofMap & dof_map)
-  { _dof_map = &dof_map; }
+  void attach_dof_map (const DofMap & dof_map);
+
+  /**
+   * Set a pointer to a sparsity pattern to use.  Useful in cases
+   * where a matrix requires a wider (or for efficiency narrower)
+   * pattern than most matrices in the system, or in cases where no
+   * system sparsity pattern is being calculated by the DofMap.
+   *
+   * The lifetime of \p sp must exceed the lifetime of \p this.
+   */
+  void attach_sparsity_pattern (const SparsityPattern::Build & sp);
 
   /**
    * \returns \p true if this sparse matrix format needs to be fed the
@@ -150,8 +167,9 @@ public:
 
   /**
    * Initialize this matrix using the sparsity structure computed by \p dof_map.
+   * @param type The serial/parallel/ghosted type of the matrix
    */
-  virtual void init () = 0;
+  virtual void init (ParallelType type = PARALLEL) = 0;
 
   /**
    * Restores the \p SparseMatrix<T> to a pristine state.
@@ -162,6 +180,21 @@ public:
    * Set all entries to 0.
    */
   virtual void zero () = 0;
+
+  /**
+   * \returns A smart pointer to a copy of this matrix with the same
+   * type, size, and partitioning, but with all zero entries.
+   *
+   * \note This must be overridden in the derived classes.
+   */
+  virtual std::unique_ptr<SparseMatrix<T>> zero_clone () const = 0;
+
+  /**
+   * \returns A smart pointer to a copy of this matrix.
+   *
+   * \note This must be overridden in the derived classes.
+   */
+  virtual std::unique_ptr<SparseMatrix<T>> clone () const = 0;
 
   /**
    * Sets all row entries to 0 then puts \p diag_value in the diagonal entry.
@@ -185,6 +218,11 @@ public:
    * \returns The row-dimension of the matrix.
    */
   virtual numeric_index_type m () const = 0;
+
+  /**
+   * Get the number of rows owned by this process
+   */
+  virtual numeric_index_type local_m () const { return row_stop() - row_start(); }
 
   /**
    * \returns The column-dimension of the matrix.
@@ -258,6 +296,22 @@ public:
    * Compute \f$ A \leftarrow A + a*X \f$ for scalar \p a, matrix \p X.
    */
   virtual void add (const T a, const SparseMatrix<T> & X) = 0;
+
+  /**
+   * Compute Y = A*X for matrix \p X.
+   */
+  virtual void matrix_matrix_mult (SparseMatrix<T> & /*X*/, SparseMatrix<T> & /*Y*/, bool /*reuse*/)
+  { libmesh_not_implemented(); }
+
+  /**
+   * Add \p scalar* \p spm to the rows and cols of this matrix (A):
+   * A(rows[i], cols[j]) += scalar * spm(i,j)
+   */
+  virtual void add_sparse_matrix (const SparseMatrix<T> & /*spm*/,
+                                  const std::map<numeric_index_type, numeric_index_type> & /*rows*/,
+                                  const std::map<numeric_index_type, numeric_index_type> & /*cols*/,
+                                  const T /*scalar*/)
+  { libmesh_not_implemented(); }
 
   /**
    * \returns A copy of matrix entry \p (i,j).
@@ -350,6 +404,9 @@ public:
    * This function creates a matrix called "submatrix" which is defined
    * by the row and column indices given in the "rows" and "cols" entries.
    * Currently this operation is only defined for the PetscMatrix type.
+   * Note: The \p rows and \p cols vectors need to be sorted;
+   *       Use the nosort version below if \p rows and \p cols vectors are not sorted;
+   *       The \p rows and \p cols only contain indices that are owned by this processor.
    */
   virtual void create_submatrix(SparseMatrix<T> & submatrix,
                                 const std::vector<numeric_index_type> & rows,
@@ -359,6 +416,21 @@ public:
                          rows,
                          cols,
                          false); // false means DO NOT REUSE submatrix
+  }
+
+  /**
+   * Similar to the above function, this function creates a \p
+   * submatrix which is defined by the indices given in the \p rows
+   * and \p cols vectors.
+   * Note: Both \p rows and \p cols can be unsorted;
+   *       Use the above function for better efficiency if your indices are sorted;
+   *       \p rows and \p cols can contain indices that are owned by other processors.
+   */
+  virtual void create_submatrix_nosort(SparseMatrix<T> & /*submatrix*/,
+                                         const std::vector<numeric_index_type> & /*rows*/,
+                                         const std::vector<numeric_index_type> & /*cols*/) const
+  {
+    libmesh_not_implemented();
   }
 
   /**
@@ -402,6 +474,20 @@ public:
    */
   virtual void get_transpose (SparseMatrix<T> & dest) const = 0;
 
+  /**
+   * Get a row from the matrix
+   * @param i The matrix row to get
+   * @param indices A container that will be filled with the column indices
+   *                corresponding to (possibly) non-zero values
+   * @param values A container holding the column values
+   */
+  virtual void get_row(numeric_index_type /*i*/,
+                       std::vector<numeric_index_type> & /*indices*/,
+                       std::vector<T> & /*values*/) const
+  {
+    libmesh_not_implemented();
+  }
+
 protected:
 
   /**
@@ -420,9 +506,17 @@ protected:
   }
 
   /**
-   * The \p DofMap object associated with this object.
+   * The \p DofMap object associated with this object.  May be queried
+   * for degree-of-freedom counts on processors.
    */
   DofMap const * _dof_map;
+
+  /**
+   * The \p sparsity pattern associated with this object.  Should be
+   * queried for entry counts (or with need_full_sparsity_pattern,
+   * patterns) when needed.
+   */
+  SparsityPattern::Build const * _sp;
 
   /**
    * Flag indicating whether or not the matrix has been initialized.

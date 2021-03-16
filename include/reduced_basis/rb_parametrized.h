@@ -51,8 +51,14 @@ public:
   RBParametrized ();
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This simple class can be default copy/move constructed/assigned.
+   * - Destructor is defaulted out-of-line.
    */
+  RBParametrized (RBParametrized &&) = default;
+  RBParametrized & operator= (RBParametrized &&) = default;
+  RBParametrized (const RBParametrized &) = default;
+  RBParametrized & operator= (const RBParametrized &) = default;
   virtual ~RBParametrized ();
 
   /**
@@ -90,6 +96,11 @@ public:
 
   /**
    * Get a set that stores the parameter names.
+   *
+   * \deprecated to avoid making it too easy to create copies that in
+   * most circumstances aren't needed.  If this functionality really
+   * is required, call get_parameters_min().get_parameters_map() and
+   * loop over the keys directly.
    */
   std::set<std::string> get_parameter_names() const;
 
@@ -233,7 +244,6 @@ private:
    * Map that defines the allowable values of any discrete parameters.
    */
   std::map<std::string, std::vector<Real>> _discrete_parameter_values;
-
 };
 
 } // namespace libMesh

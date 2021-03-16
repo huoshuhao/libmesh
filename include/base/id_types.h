@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -60,14 +60,21 @@ typedef int16_t boundary_id_type;
 
 // How many bytes do we need to specify DoFObjects?  By default we'll
 // allow for a few billion (each) nodes & elements.
+//
+// We'll need a sign bit in some internal buffers, so let's also
+// define a signed type that we can convert to without loss.
 #if LIBMESH_DOF_ID_BYTES == 1
 typedef uint8_t dof_id_type;
+typedef  int8_t dof_id_signed_type;
 #elif LIBMESH_DOF_ID_BYTES == 2
 typedef uint16_t dof_id_type;
+typedef  int16_t dof_id_signed_type;
 #elif LIBMESH_DOF_ID_BYTES == 8
 typedef uint64_t dof_id_type;
+typedef  int64_t dof_id_signed_type;
 #else // LIBMESH_DOF_ID_BYTES = 4 (default)
 typedef uint32_t dof_id_type;
+typedef  int32_t dof_id_signed_type;
 #endif
 
 

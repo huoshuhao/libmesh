@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -29,17 +29,27 @@
 // Local includes
 #include "libmesh/numeric_vector.h"
 #include "libmesh/petsc_macro.h"
+#include "libmesh/int_range.h"
 #include "libmesh/libmesh_common.h"
 #include "libmesh/petsc_solver_exception.h"
+#include "libmesh/parallel_only.h"
+#include "libmesh/enum_to_string.h"
 
 // PETSc include files.
+#ifdef I
+# define LIBMESH_SAW_I
+#endif
 #include <petscvec.h>
+#ifndef LIBMESH_SAW_I
+# undef I // Avoid complex.h contamination
+#endif
 
 // C++ includes
 #include <cstddef>
 #include <cstring>
 #include <vector>
 #include <unordered_map>
+#include <limits>
 
 #ifdef LIBMESH_HAVE_CXX11_THREAD
 #include <atomic>
@@ -274,6 +284,8 @@ public:
 
   virtual void scale (const T factor) override;
 
+  virtual NumericVector<T> & operator *= (const NumericVector<T> & v) override;
+
   virtual NumericVector<T> & operator /= (const NumericVector<T> & v) override;
 
   virtual void abs() override;
@@ -314,15 +326,19 @@ public:
 
   virtual void swap (NumericVector<T> & v) override;
 
+  virtual std::size_t max_allowed_id() const override;
+
   /**
    * \returns The raw PETSc Vec pointer.
    *
    * \note This is generally not required in user-level code.
    *
-   * \note Don't do anything crazy like calling LibMeshVecDestroy() on
+   * \note Don't do anything crazy like calling VecDestroy() on
    * it, or very bad things will likely happen!
    */
   Vec vec () { libmesh_assert (_vec); return _vec; }
+
+  Vec vec () const { libmesh_assert (_vec); return _vec; }
 
 
 private:
@@ -555,57 +571,46 @@ PetscVector<T>::PetscVector (Vec v,
   LIBMESH_CHKERR(ierr);
 
   // Get the vector type from PETSc.
-  // As of PETSc 3.0.0, the VecType #define lost its const-ness, so we
-  // need to have it in the code
-#if PETSC_VERSION_LESS_THAN(3,0,0) || !PETSC_VERSION_LESS_THAN(3,4,0)
-  // Pre-3.0 and petsc-dev (as of October 2012) use non-const versions
   VecType ptype;
-#else
-  const VecType ptype;
-#endif
   ierr = VecGetType(_vec, &ptype);
   LIBMESH_CHKERR(ierr);
 
   if ((std::strcmp(ptype,VECSHARED) == 0) || (std::strcmp(ptype,VECMPI) == 0))
     {
-#if PETSC_RELEASE_LESS_THAN(3,1,1)
-      ISLocalToGlobalMapping mapping = _vec->mapping;
-#else
       ISLocalToGlobalMapping mapping;
       ierr = VecGetLocalToGlobalMapping(_vec, &mapping);
       LIBMESH_CHKERR(ierr);
-#endif
 
+      Vec localrep;
+      ierr = VecGhostGetLocalForm(_vec,&localrep);
+      LIBMESH_CHKERR(ierr);
       // If is a sparsely stored vector, set up our new mapping
-      if (mapping)
+      // Only checking mapping is not enough to determine if a vec is ghosted
+      // We need to check if vec has a local representation
+      if (mapping && localrep)
         {
           const numeric_index_type my_local_size = static_cast<numeric_index_type>(petsc_local_size);
           const numeric_index_type ghost_begin = static_cast<numeric_index_type>(petsc_local_size);
-#if PETSC_RELEASE_LESS_THAN(3,4,0)
-          const numeric_index_type ghost_end = static_cast<numeric_index_type>(mapping->n);
-#else
           PetscInt n;
           ierr = ISLocalToGlobalMappingGetSize(mapping, &n);
           LIBMESH_CHKERR(ierr);
+
           const numeric_index_type ghost_end = static_cast<numeric_index_type>(n);
-#endif
-#if PETSC_RELEASE_LESS_THAN(3,1,1)
-          const PetscInt * indices = mapping->indices;
-#else
           const PetscInt * indices;
           ierr = ISLocalToGlobalMappingGetIndices(mapping,&indices);
           LIBMESH_CHKERR(ierr);
-#endif
+
           for (numeric_index_type i=ghost_begin; i<ghost_end; i++)
             _global_to_local_map[indices[i]] = i-my_local_size;
           this->_type = GHOSTED;
-#if !PETSC_RELEASE_LESS_THAN(3,1,1)
           ierr = ISLocalToGlobalMappingRestoreIndices(mapping, &indices);
           LIBMESH_CHKERR(ierr);
-#endif
         }
       else
         this->_type = PARALLEL;
+
+      ierr = VecGhostRestoreLocalForm(_vec,&localrep);
+      LIBMESH_CHKERR(ierr);
     }
   else
     this->_type = SERIAL;
@@ -634,8 +639,6 @@ void PetscVector<T>::init (const numeric_index_type n,
 
   PetscErrorCode ierr=0;
   PetscInt petsc_n=static_cast<PetscInt>(n);
-  PetscInt petsc_n_local=static_cast<PetscInt>(n_local);
-
 
   // Clear initialized vectors
   if (this->initialized())
@@ -667,6 +670,7 @@ void PetscVector<T>::init (const numeric_index_type n,
   else if (this->_type == PARALLEL)
     {
 #ifdef LIBMESH_HAVE_MPI
+      PetscInt petsc_n_local=cast_int<PetscInt>(n_local);
       libmesh_assert_less_equal (n_local, n);
       ierr = VecCreateMPI (this->comm().get(), petsc_n_local, petsc_n,
                            &_vec);
@@ -681,7 +685,7 @@ void PetscVector<T>::init (const numeric_index_type n,
       LIBMESH_CHKERR(ierr);
     }
   else
-    libmesh_error_msg("Unsupported type " << this->_type);
+    libmesh_error_msg("Unsupported type " << Utility::enum_to_string(this->_type));
 
   this->_is_initialized = true;
   this->_is_closed = true;
@@ -743,7 +747,7 @@ void PetscVector<T>::init (const numeric_index_type n,
   this->_type = GHOSTED;
 
   /* Make the global-to-local ghost cell map.  */
-  for (numeric_index_type i=0; i<ghost.size(); i++)
+  for (auto i : index_range(ghost))
     {
       _global_to_local_map[ghost[i]] = i;
     }
@@ -813,20 +817,10 @@ void PetscVector<T>::close ()
 
   this->_restore_array();
 
-  PetscErrorCode ierr=0;
-
-  ierr = VecAssemblyBegin(_vec);
-  LIBMESH_CHKERR(ierr);
-  ierr = VecAssemblyEnd(_vec);
-  LIBMESH_CHKERR(ierr);
+  VecAssemblyBeginEnd(this->comm(), _vec);
 
   if (this->type() == GHOSTED)
-    {
-      ierr = VecGhostUpdateBegin(_vec,INSERT_VALUES,SCATTER_FORWARD);
-      LIBMESH_CHKERR(ierr);
-      ierr = VecGhostUpdateEnd(_vec,INSERT_VALUES,SCATTER_FORWARD);
-      LIBMESH_CHKERR(ierr);
-    }
+    VecGhostUpdateBeginEnd(this->comm(), _vec, INSERT_VALUES, SCATTER_FORWARD);
 
   this->_is_closed = true;
 }
@@ -846,7 +840,7 @@ void PetscVector<T>::clear ()
     {
       PetscErrorCode ierr=0;
 
-      ierr = LibMeshVecDestroy(&_vec);
+      ierr = VecDestroy(&_vec);
       LIBMESH_CHKERR(ierr);
     }
 
@@ -1204,6 +1198,15 @@ void PetscVector<T>::swap (NumericVector<T> & other)
 }
 
 
+
+template <typename T>
+inline
+std::size_t PetscVector<T>::max_allowed_id () const
+{
+  // The PetscInt type is used for indexing, it may be either a signed
+  // 4-byte or 8-byte integer depending on how PETSc is configured.
+  return std::numeric_limits<PetscInt>::max();
+}
 
 
 

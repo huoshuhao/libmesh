@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -137,18 +137,14 @@ int main (int argc, char** argv)
   LibMeshInit init (argc, argv);
 
   // Check for proper usage first.
-  if (argc < 2)
-    libmesh_error_msg("\nUsage: " << argv[0] << " <input-filename>");
+  libmesh_error_msg_if(argc < 2, "\nUsage: " << argv[0] << " <input-filename>");
 
   // Tell the user what we are doing.
-  else
-    {
-      std::cout << "Running " << argv[0];
+  std::cout << "Running " << argv[0];
 
-      for (int i=1; i<argc; i++)
-        std::cout << " " << argv[i];
-      std::cout << std::endl << std::endl;
-    }
+  for (int i=1; i<argc; i++)
+    std::cout << " " << argv[i];
+  std::cout << std::endl << std::endl;
 
   // Skip SLEPc examples on a non-SLEPc libMesh build
 #ifndef LIBMESH_HAVE_SLEPC
@@ -200,7 +196,7 @@ int main (int argc, char** argv)
       {
         elem->subdomain_id() = 1;
         // the base elements are always the 0-th neighor.
-        elem->neighbor(0)->subdomain_id()=2;
+        elem->neighbor_ptr(0)->subdomain_id()=2;
       }
 
   // find the neighbours; for correct linking the two areas
@@ -213,7 +209,7 @@ int main (int argc, char** argv)
   EigenSystem & eig_sys = eq_sys.add_system<EigenSystem> ("EigenSE");
 
   //set the complete type of the variable
-  FEType fe_type(SECOND, LAGRANGE, SECOND, JACOBI_20_00, CARTESIAN);
+  FEType fe_type(SECOND, LAGRANGE, FOURTH, JACOBI_20_00, CARTESIAN);
 
   // Name the variable of interest 'phi' and approximate it as \p fe_type.
   eig_sys.add_variable("phi", fe_type);
@@ -239,17 +235,17 @@ int main (int argc, char** argv)
 
   // set numerical parameters for SLEPC on how to solve the system.
 #if SLEPC_VERSION_LESS_THAN(2,3,2)
-  eig_sys.eigen_solver->set_eigensolver_type(ARNOLDI);
+  eig_sys.get_eigen_solver().set_eigensolver_type(ARNOLDI);
 #else
-  eig_sys.eigen_solver->set_eigensolver_type(KRYLOVSCHUR);
+  eig_sys.get_eigen_solver().set_eigensolver_type(KRYLOVSCHUR);
 #endif
 
-  eig_sys.eigen_solver->set_position_of_spectrum(E);
+  eig_sys.get_eigen_solver().set_position_of_spectrum(E);
 
   //fetch the solver-object used internally to be able to manipulate it using the self-written class
   // to set the transformation
   SlepcEigenSolver<Number> * solver =
-    libmesh_cast_ptr<SlepcEigenSolver<Number>* >( &(*eig_sys.eigen_solver) );
+    libmesh_cast_ptr<SlepcEigenSolver<Number>* >( &eig_sys.get_eigen_solver() );
 
   // setup of our class @SlepcSolverConfiguration
   SlepcSolverConfiguration ConfigSolver(*solver);
@@ -354,8 +350,8 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
   FEType fe_type = eigen_system.get_dof_map().variable_type(0);
 
   // A reference to the system matrices
-  SparseMatrix<Number>&  matrix_A = *eigen_system.matrix_A;
-  SparseMatrix<Number>&  matrix_B = *eigen_system.matrix_B;
+  SparseMatrix<Number>&  matrix_A = eigen_system.get_matrix_A();
+  SparseMatrix<Number>&  matrix_B = eigen_system.get_matrix_B();
 
   // A  Gauss quadrature rule for numerical integration.
   // Use the default quadrature order.
@@ -384,10 +380,7 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
 
   // set parameters used for the infinite elements:
   es.parameters.set<Real>("speed")=137.0359991;
-  es.parameters.set<Number>("current frequency")=es.parameters.get<Real>("speed")*ik/(2*pi);
-
-  Number potval;
-  Number temp;
+  es.parameters.set<Number>("current frequency")=es.parameters.get<Real>("speed")*sqrt(2.*E)/(2*pi);
 
   // A reference to the \p DofMap object for this system.  The \p DofMap
   // object handles the index translation from node and element numbers
@@ -435,16 +428,16 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
         }
 
       // The element Jacobian * quadrature weight at each integration point.
-      const std::vector<Real>& JxW = cfe->get_JxW();
+      const std::vector<Real> & JxW = cfe->get_JxWxdecay_sq();
 
       // The element shape functions evaluated at the quadrature points.
-      const std::vector<std::vector<Real> >& phi = cfe->get_phi();
-      const std::vector<std::vector<RealGradient> >& dphi = cfe->get_dphi();
+      const std::vector<std::vector<Real>> & phi = cfe->get_phi_over_decayxR();
+      const std::vector<std::vector<RealGradient>> & dphi = cfe->get_dphi_over_decayxR();
       const std::vector<Point>& q_point = cfe->get_xyz();
       // get extra data needed for infinite elements
       const std::vector<RealGradient>& dphase = cfe->get_dphase();
-      const std::vector<Real>& weight = cfe->get_Sobolev_weight(); // in publication called D
-      const std::vector<RealGradient>& dweight = cfe->get_Sobolev_dweight();
+      const std::vector<Real> &         weight  = cfe->get_Sobolev_weightxR_sq();
+      const std::vector<RealGradient> & dweight = cfe->get_Sobolev_dweightxR_sq();
 
       // Compute the element-specific data for the current
       // element.  This involves computing the location of the
@@ -469,7 +462,7 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
         {
 
           // compute the Coulomb potential
-          potval=-1./(q_point[qp]).norm();
+          Number potval=-1./(q_point[qp]).norm();
 
           // Now, get number of shape functions that are nonzero at this point::
           unsigned int n_sf = cfe->n_shape_functions();
@@ -482,13 +475,14 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
                   // This is just the of derivatives of shape functions i and j.
                   // For finite elements, dweight==0 and dphase==0, thus
                   // temp=dphi[i][qp]*dphi[j][qp].
-                  temp = (dweight[qp]*phi[i][qp]+weight[qp]*(dphi[i][qp]-ik*dphase[qp]*phi[i][qp]))
-                    *(dphi[j][qp]+ik*dphase[qp]*phi[j][qp]);
+                  Number temp = (dweight[qp]*phi[i][qp]+weight[qp]*(dphi[i][qp]-ik*dphase[qp]*phi[i][qp]))
+                                *(dphi[j][qp]+ik*dphase[qp]*phi[j][qp]);
 
                   // assemble the Hamiltonian: H=1/2 Nabla^2 + V
                   H(i,j) += JxW[qp]*(0.5*temp + potval*weight[qp]*phi[i][qp]*phi[j][qp]);
+
                   // assemble the mass matrix:
-                  M(i,j)+= JxW[qp]*weight[qp]*phi[i][qp]*phi[j][qp];
+                  M(i,j) += JxW[qp]*weight[qp]*phi[i][qp]*phi[j][qp];
                 }
             }
         }
@@ -530,8 +524,14 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
          //dof_map.dof_indices (elem, dof_indices_lm,lm_num);
          dof_map.dof_indices (elem, dof_indices);
 
+         /*
+          * Here we use an inconsistent setup: the Jacobian is weighted while all other quantities are
+          * not weighted.
+          * But on the base face all weights are one; thus, it is only a formal problem.
+          */
+
          // Having the correct face, we can start initializing all quantities:
-         const std::vector<Real>& JxW = face_fe->get_JxW();
+         const std::vector<Real>& JxW = face_fe->get_JxWxdecay_sq();
          const std::vector<Point>& q_point = face_fe->get_xyz();
          const std::vector<std::vector<RealGradient> >& dphi = face_fe->get_dphi();
          const std::vector<std::vector<Real> >& phi = face_fe->get_phi();
@@ -561,12 +561,6 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
    }
    // loop over NEIGHBOURS OF INFINITE ELEMENTS
    sd=2; {
-      // Build a Finite Element object of the specified type.  Since the
-      // \p FEBase::build() member dynamically creates memory we will
-      // store the object as an \p UniquePtr<FEBase>.  This can be thought
-      // of as a pointer that will clean up after itself.
-      UniquePtr<FEBase> fe (FEBase::build(dim, fe_type));
-
       QGauss qrule2 (dim-1, fe_type.default_quadrature_order());
       UniquePtr<FEBase> face_fe (FEBase::build(dim, fe_type));
       face_fe->attach_quadrature_rule (&qrule2);
@@ -582,7 +576,7 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
          unsigned int num_neighbors=0;
 
          for (unsigned int i=0; i<elem->n_neighbors(); i++){
-            if (elem->neighbor(i)->infinite()){
+            if (elem->neighbor_ptr(i)->infinite()){
                num_neighbors++;
             }
          }
@@ -601,14 +595,14 @@ void assemble_SchroedingerEquation(EquationSystems &es, const std::string &syste
             const std::vector<std::vector<Real> >& phi = face_fe->get_phi();
             const std::vector<Point>& normal = face_fe->get_normals();
 
-            Elem* relevant_neighbor=elem->neighbor(prev_neighbor);
+            const Elem* relevant_neighbor=elem->neighbor_ptr(prev_neighbor);
 
             // Get the correct face to the finite element; for thise, continue looping
             // until a neighbor is an infinite element.
             // If none is found, we leave this loop
             for (; prev_neighbor<elem->n_neighbors(); prev_neighbor++){
-               if (elem->neighbor(prev_neighbor)->infinite()){
-                  relevant_neighbor=elem->neighbor(prev_neighbor);
+               if (elem->neighbor_ptr(prev_neighbor)->infinite()){
+                  relevant_neighbor=elem->neighbor_ptr(prev_neighbor);
                   break;
                }
             }
@@ -691,7 +685,8 @@ void SlepcSolverConfiguration::configure_solver()
       // initialise the st with the default values and change the spectral transformation value.
       ST st;
       PetscErrorCode ierr = EPSGetST(_slepc_solver.eps(), &st);
-      LIBMESH_CHKERR(ierr);
+      if (ierr)
+        libmesh_error();
 
       // Set it to the desired type of spectral transformation.
       // The value of the respective shift is chosen to be the target
@@ -716,7 +711,8 @@ void SlepcSolverConfiguration::configure_solver()
           // print a warning but do nothing more.
           break;
         }
-      LIBMESH_CHKERR(ierr);
+      if (ierr)
+        libmesh_error();
 
       // since st is a reference to the particular object used by \p _slepc_solver,
       // we don't need to hand back the manipulated object. It will be applied before
@@ -789,9 +785,8 @@ void line_print(EquationSystems& es, std::string output, std::string SysName)
 
       // check that the solution is close to the analytic answer.
       // Comparing abs(soln) because there is a degree of freedom in the global phase.
-      libmesh_assert_less(std::abs(std::abs(soln)-0.081*exp(-q_point.norm())), .0011);
+      libmesh_assert_less(std::abs(std::abs(soln)-0.08*exp(-q_point.norm())), .002);
 
     }
 #endif //LIBMESH_ENABLE_INFINITE_ELEMENTS
 }
-

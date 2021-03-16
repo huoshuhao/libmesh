@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -115,8 +115,7 @@ int main (int argc, char ** argv)
   libmesh_example_requires(2 <= LIBMESH_DIM, "2D support");
 
   // Check for proper usage. frequency has two terms:
-  if ( argc <4 )
-    libmesh_error_msg("Usage: " << argv[0] << " -f [real_frequency imag_frequency]");
+  libmesh_error_msg_if(argc < 4, "Usage: " << argv[0] << " -f [real_frequency imag_frequency]");
 
   if (init.comm().size() > 1)
     {
@@ -367,6 +366,9 @@ void assemble_helmholtz(EquationSystems & es,
   // the element degrees of freedom get mapped.
   std::vector<dof_id_type> dof_indices;
 
+  // The global system matrix
+  SparseMatrix<Number> & matrix = f_system.get_system_matrix();
+
   // Now we will loop over all the elements in the mesh, and compute
   // the element matrix and right-hand-side contributions.
   for (const auto & elem : mesh.active_local_element_ptr_range())
@@ -492,7 +494,7 @@ void assemble_helmholtz(EquationSystems & es,
       // For the overall matrix, explicitly zero the entries where
       // we added values in the other ones, so that we have
       // identical sparsity footprints.
-      f_system.matrix->add_matrix(zero_matrix, dof_indices);
+      matrix.add_matrix(zero_matrix, dof_indices);
     } // end loop over elements
 }
 

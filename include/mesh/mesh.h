@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,7 +22,6 @@
 #include "libmesh/libmesh_config.h"
 
 #ifdef LIBMESH_ENABLE_PARMESH
-#include "libmesh/auto_ptr.h" // libmesh_make_unique
 #include "libmesh/distributed_mesh.h"
 namespace libMesh {
 typedef DistributedMesh DefaultMesh;
@@ -69,11 +68,15 @@ public:
   Mesh (const UnstructuredMesh & other_mesh) : DefaultMesh(other_mesh) {}
 
   /**
-   * Default copy/move constructors and destructor.
+   * Default copy constructors and destructor.
    */
   Mesh(const Mesh &) = default;
-  Mesh(Mesh &&) = default;
   ~Mesh() = default;
+
+  /**
+   * Move-constructor deleted in MeshBase.
+   */
+  Mesh(Mesh &&) = delete;
 
   /**
    * Copy and move assignment are not allowed.

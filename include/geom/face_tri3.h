@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -32,8 +32,9 @@ namespace libMesh
 {
 
 /**
- * The \p Tri3 is an element in 2D composed of 3 nodes.
- * It is numbered like this:
+ * The \p Tri3 is an element in 2D composed of 3 nodes.  It is
+ * numbered like this:
+ *
  * \verbatim
  *   TRI3:
  *    2
@@ -46,8 +47,12 @@ namespace libMesh
  *    o-----o
  *    0      1
  * \endverbatim
- * (xi, eta) are the reference element coordinates associated with
- * the given numbering.
+ *
+ * (xi, eta): { 0 <= xi  <= 1
+ *            { 0 <= eta <= 1
+ *            { xi + eta <= 1
+ * are the reference element coordinates associated with the given
+ * numbering.
  *
  * \author Benjamin S. Kirk
  * \date 2002
@@ -103,6 +108,8 @@ public:
                                const unsigned int s) const override;
 
   virtual std::vector<unsigned int> nodes_on_side(const unsigned int s) const override;
+
+  virtual std::vector<unsigned int> nodes_on_edge(const unsigned int e) const override;
 
   /**
    * \returns \p true if the specified (local) node number is on the

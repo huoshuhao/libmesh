@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -34,6 +34,7 @@ namespace libMesh
 
 // Forward Declarations
 template <typename T> class SparseMatrix;
+template <typename T> class ShellMatrix;
 
 
 /**
@@ -56,16 +57,21 @@ class EigenSystem : public System
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   EigenSystem (EquationSystems & es,
                const std::string & name_in,
                const unsigned int number_in);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - Destructor is defaulted out-of-line
    */
+  EigenSystem (const EigenSystem &) = delete;
+  EigenSystem & operator= (const EigenSystem &) = delete;
+  EigenSystem (EigenSystem &&) = default;
+  EigenSystem & operator= (EigenSystem &&) = delete;
   virtual ~EigenSystem ();
 
   /**
@@ -101,26 +107,22 @@ public:
   virtual void solve () override;
 
   /**
-   * Assembles the system matrix.
-   */
-  virtual void assemble () override;
-
-  /**
    * \returns Real and imaginary part of the ith eigenvalue and copies
    * the respective eigen vector to the solution vector.
    */
   virtual std::pair<Real, Real> get_eigenpair (dof_id_type i);
 
   /**
+   * \returns Real and imaginary part of the ith eigenvalue but
+   * does not copy the respective eigen vector to the solution vector.
+   */
+  virtual std::pair<Real, Real> get_eigenvalue (dof_id_type i);
+
+  /**
    * \returns \p "Eigen".  Helps in identifying
    * the system type in an equation system file.
    */
   virtual std::string system_type () const override { return "Eigen"; }
-
-  /**
-   * \returns The number of matrices handled by this system
-   */
-  virtual unsigned int n_matrices () const override;
 
   /**
    * \returns The number of converged eigenpairs.
@@ -143,41 +145,234 @@ public:
   EigenProblemType get_eigenproblem_type () const {return _eigen_problem_type;}
 
   /**
+   * Sets an initial eigen vector
+   */
+  void set_initial_space(NumericVector<Number> & initial_space_in);
+
+  /**
    * \returns \p true if the underlying problem is generalized
    * , false otherwise.
    */
-  bool generalized () const { return _is_generalized_eigenproblem; }
+  bool generalized () const;
+
+  /**
+   * \returns \p true if the shell matrices are used
+   */
+  bool use_shell_matrices() const { return _use_shell_matrices; }
+
+  /**
+   * Set a flag to use shell matrices
+   */
+  void use_shell_matrices(bool use_shell_matrices) { _use_shell_matrices = use_shell_matrices; }
+
+  /**
+   * \returns \p true if a shell preconditioning matrix is used
+   */
+  bool use_shell_precond_matrix() const { return _use_shell_precond_matrix; }
+
+  /**
+   * Set a flag to use a shell preconditioning matrix
+   */
+  void use_shell_precond_matrix(bool use_shell_precond_matrix) { _use_shell_precond_matrix = use_shell_precond_matrix; }
+
+  /**
+   * \returns A const reference to the system matrix used for standard eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices.
+   */
+  const SparseMatrix<Number> & get_matrix_A() const;
+
+  /**
+   * \returns A reference to the system matrix used for standard eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices.
+   */
+  SparseMatrix<Number> & get_matrix_A();
+
+  /**
+   * \returns A const reference to the system matrix used for generalized eigenvalue problems
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices and generalized().
+   */
+  const SparseMatrix<Number> & get_matrix_B() const;
+
+  /**
+   * \returns A const reference to the system matrix used for generalized eigenvalue problems
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices and generalized().
+   */
+  SparseMatrix<Number> & get_matrix_B();
+
+  /**
+   * \returns A const reference to the preconditioning matrix.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices.
+   */
+  const SparseMatrix<Number> & get_precond_matrix() const;
+
+  /**
+   * \returns A reference to the preconditioning matrix.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if !_use_shell_matrices.
+   */
+  SparseMatrix<Number> & get_precond_matrix();
+
+  /**
+   * \returns A const reference to the system shell matrix used for standard eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if _use_shell_matrices.
+   */
+  const ShellMatrix<Number> & get_shell_matrix_A() const;
+
+  /**
+   * \returns A reference to the system shell matrix used for standard eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if _use_shell_matrices.
+   */
+  ShellMatrix<Number> & get_shell_matrix_A();
+
+  /**
+   * \returns A const reference to the system shell matrix used for generalized eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if _use_shell_matrices and generalized().
+   */
+  const ShellMatrix<Number> & get_shell_matrix_B() const;
+
+  /**
+   * \returns A reference to the system shell matrix used for generalized eigenvalue problems.
+   *
+   * This matrix should only be available (and therefore this should only be called)
+   * if _use_shell_matrices and generalized().
+   */
+  ShellMatrix<Number> & get_shell_matrix_B();
+
+  /**
+   * \returns A const reference to the system shell matrix used for preconditioning.
+   */
+  const ShellMatrix<Number> & get_shell_precond_matrix() const;
+
+  /**
+   * \returns A reference to the system shell matrix used for preconditioning.
+   */
+  ShellMatrix<Number> & get_shell_precond_matrix();
+
+  /**
+   * \returns A const reference to the EigenSolver.
+   */
+  const EigenSolver<Number> & get_eigen_solver() const;
+  /**
+   * \returns A reference to the EigenSolver.
+   */
+  EigenSolver<Number> & get_eigen_solver();
+
+  /**
+   * \returns Whether or not the system has matrix A
+   */
+  bool has_matrix_A() const;
+
+  /**
+   * \returns Whether or not the system has matrix B
+   */
+  bool has_matrix_B() const;
+
+  /**
+   * \returns Whether or not the system has the non-shell preconditioning matrix
+   */
+  bool has_precond_matrix() const;
+
+  /**
+   * \returns Whether or not the system has the shell matrix A
+   */
+  bool has_shell_matrix_A() const;
+
+  /**
+   * \returns Whether or not the system has the shell matrix B
+   */
+  bool has_shell_matrix_B() const;
+
+  /**
+   * \returns Whether or not the system has the shell preconditioning matrix
+   */
+  bool has_shell_precond_matrix() const;
 
   /**
    * The system matrix for standard eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_matrix_A() instead.
    */
-  std::unique_ptr<SparseMatrix<Number>> matrix_A;
+  SparseMatrix<Number> * matrix_A;
 
   /**
    * A second system matrix for generalized eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_matrix_B() instead.
    */
-  std::unique_ptr<SparseMatrix<Number>> matrix_B;
+  SparseMatrix<Number> * matrix_B;
+
+  /**
+   * The system shell matrix for standard eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_shell_matrix_A() instead.
+   */
+  std::unique_ptr<ShellMatrix<Number>> shell_matrix_A;
+
+  /**
+   * A second system shell matrix for generalized eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_shell_matrix_B() instead.
+   */
+  std::unique_ptr<ShellMatrix<Number>> shell_matrix_B;
+
+  /**
+   * A preconditioning matrix
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_precond_matrix() instead.
+   */
+  SparseMatrix<Number> * precond_matrix;
+
+  /**
+   * A preconditioning shell matrix
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_shell_precond_matrix() instead.
+   */
+  std::unique_ptr<ShellMatrix<Number>> shell_precond_matrix;
 
   /**
    * The EigenSolver, defining which interface, i.e solver
    * package to use.
+   *
+   * Public access to this member variable will be depreacted in
+   * the future! Use get_eigen_solver instead.
    */
   std::unique_ptr<EigenSolver<Number>> eigen_solver;
 
 
 protected:
 
-
   /**
-   * Initializes the member data fields associated with
-   * the system, so that, e.g., \p assemble() may be used.
+   * Adds the necessary matrices and shell matrices
    */
-  virtual void init_data () override;
+  virtual void add_matrices () override;
 
   /**
    * Initializes the matrices associated with the system
    */
-  virtual void init_matrices ();
+  virtual void init_matrices () override;
 
   /**
    * Set the _n_converged_eigenpairs member, useful for
@@ -207,29 +402,20 @@ private:
   unsigned int _n_iterations;
 
   /**
-   * A boolean flag to indicate whether we are dealing with
-   * a generalized eigenvalue problem.
-   */
-  bool _is_generalized_eigenproblem;
-
-  /**
    * The type of the eigenvalue problem.
    */
   EigenProblemType _eigen_problem_type;
+
+  /**
+   * A boolean flag to indicate whether or not to use shell matrices
+   */
+  bool _use_shell_matrices;
+
+  /**
+   * A boolean flag to indicate whether or not to use a shell preconditioning matrix
+   */
+  bool _use_shell_precond_matrix;
 };
-
-
-
-// ------------------------------------------------------------
-// EigenSystem inline methods
-inline
-unsigned int EigenSystem::n_matrices () const
-{
-  if (_is_generalized_eigenproblem)
-    return 2;
-
-  return 1;
-}
 
 } // namespace libMesh
 

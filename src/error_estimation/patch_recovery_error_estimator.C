@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -16,13 +16,7 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
-// C++ includes
-#include <algorithm> // for std::fill
-#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
-#include <cmath>     // for std::sqrt std::pow std::abs
-
-
-// Local Includes
+// libmesh includes
 #include "libmesh/libmesh_common.h"
 #include "libmesh/patch_recovery_error_estimator.h"
 #include "libmesh/dof_map.h"
@@ -43,6 +37,12 @@
 #include "libmesh/enum_error_estimator_type.h"
 #include "libmesh/enum_norm_type.h"
 #include "libmesh/int_range.h"
+#include "libmesh/enum_to_string.h"
+
+// C++ includes
+#include <algorithm> // for std::fill
+#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
+#include <cmath>     // for std::sqrt std::pow std::abs
 
 namespace libMesh
 {
@@ -80,25 +80,25 @@ std::vector<Real> PatchRecoveryErrorEstimator::specpoly(const unsigned int dim,
 {
   std::vector<Real> psi;
   psi.reserve(matsize);
-  unsigned int npows = order+1;
+  int npows = order+1;
   std::vector<Real> xpow(npows,1.), ypow, zpow;
   {
     Real x = p(0);
-    for (auto i : IntRange<int>(1, npows))
+    for (auto i : make_range(1, npows))
       xpow[i] = xpow[i-1] * x;
   }
   if (dim > 1)
     {
       Real y = p(1);
       ypow.resize(npows,1.);
-      for (auto i : IntRange<int>(1, npows))
+      for (auto i : make_range(1, npows))
         ypow[i] = ypow[i-1] * y;
     }
   if (dim > 2)
     {
       Real z = p(2);
       zpow.resize(npows,1.);
-      for (auto i : IntRange<int>(1, npows))
+      for (auto i : make_range(1, npows))
         zpow[i] = zpow[i-1] * z;
     }
 
@@ -451,8 +451,9 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
                   const unsigned int psi_size = cast_int<unsigned int>(psi.size());
 
                   // Patch matrix contribution
-                  for (unsigned int i=0; i<Kp.m(); i++)
-                    for (unsigned int j=0; j<Kp.n(); j++)
+                  const unsigned int m = Kp.m(), n = Kp.n();
+                  for (unsigned int i=0; i<m; i++)
+                    for (unsigned int j=0; j<n; j++)
                       Kp(i,j) += JxW[qp]*psi[i]*psi[j];
 
                   if (error_estimator.error_norm.type(var) == L2 ||
@@ -509,6 +510,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
                           Fx(i) += JxW[qp]*grad_u_h(0)*psi[i];
                         }
                     }
+#if LIBMESH_DIM > 1
                   else if (error_estimator.error_norm.type(var) == H1_Y_SEMINORM)
                     {
                       // Compute the gradient on the current patch element
@@ -525,6 +527,8 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
                           Fy(i) += JxW[qp]*grad_u_h(1)*psi[i];
                         }
                     }
+#endif // LIBMESH_DIM > 1
+#if LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H1_Z_SEMINORM)
                     {
                       // Compute the gradient on the current patch element
@@ -541,6 +545,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
                           Fz(i) += JxW[qp]*grad_u_h(2)*psi[i];
                         }
                     }
+#endif // LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H2_SEMINORM ||
                            error_estimator.error_norm.type(var) == W2_INF_SEMINORM)
                     {
@@ -572,7 +577,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
 #endif
                     }
                   else
-                    libmesh_error_msg("Unsupported error norm type!");
+                    libmesh_error_msg("Unsupported error norm type == " << Utility::enum_to_string(error_estimator.error_norm.type(var)));
                 } // end quadrature loop
             } // end patch loop
 
@@ -781,6 +786,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
 
                       temperr[0] -= grad_u_h(0);
                     }
+#if LIBMESH_DIM > 1
                   else if (error_estimator.error_norm.type(var) == H1_Y_SEMINORM)
                     {
                       // Compute the gradient at the current sample point
@@ -799,6 +805,8 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
 
                       temperr[1] -= grad_u_h(1);
                     }
+#endif // LIBMESH_DIM > 1
+#if LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H1_Z_SEMINORM)
                     {
                       // Compute the gradient at the current sample point
@@ -817,6 +825,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
 
                       temperr[2] -= grad_u_h(2);
                     }
+#endif // LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H2_SEMINORM ||
                            error_estimator.error_norm.type(var) == W2_INF_SEMINORM)
                     {
@@ -904,7 +913,7 @@ void PatchRecoveryErrorEstimator::EstimateError::operator()(const ConstElemRange
                        error_estimator.error_norm.type(var) == H2_SEMINORM)
                 new_error_per_cell[e] += error_estimator.error_norm.weight_sq(var) * element_error;
               else
-                libmesh_error_msg("Unsupported error norm type!");
+                libmesh_error_msg("Unsupported error norm type == " << Utility::enum_to_string(error_estimator.error_norm.type(var)));
             }  // End (re) loop over patch elements
 
         } // end variables loop

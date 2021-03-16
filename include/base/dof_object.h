@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,6 +22,7 @@
 
 // Local includes
 #include "libmesh/id_types.h"
+#include "libmesh/int_range.h"
 #include "libmesh/libmesh_config.h"
 #include "libmesh/libmesh_common.h"
 #include "libmesh/libmesh.h" // libMesh::invalid_uint
@@ -29,6 +30,7 @@
 
 // C++ includes
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 namespace libMesh
@@ -91,8 +93,11 @@ public:
 #endif
 
   /**
-   * Clear the \p DofMap data structures and return to
-   * a pristine state.
+   * Clear the \p DofMap data structures holding degree of freedom
+   * data.
+   *
+   * If any extra integers are associated with this \p DofObject,
+   * their count and values are unchanged.
    */
   void clear_dofs ();
 
@@ -141,9 +146,16 @@ public:
   unique_id_type unique_id () const;
 
   /**
-   * \returns The globally \p unique_id for this \p DofObject as a writable reference.
+   * \returns The globally \p unique_id for this \p DofObject as a
+   * writable reference.  Deprecated; use the API taking an input
+   * instead.
    */
   unique_id_type & set_unique_id ();
+
+  /**
+   * Sets the \p unique_id for this \p DofObject
+   */
+  void set_unique_id (unique_id_type new_id);
 
   /**
    * Sets the \p id for this \p DofObject
@@ -196,9 +208,54 @@ public:
   unsigned int n_systems() const;
 
   /**
-   *  Sets the number of systems for this \p DofObject
+   * \returns The total number of pseudo-systems associated with this
+   * \p DofObject :
+   * n_systems(), plus one iff \p this->has_extra_integers()
+   */
+  unsigned int n_pseudo_systems() const;
+
+  /**
+   * Sets the number of systems for this \p DofObject.  If this number
+   * is a change, also clears all variable count and DoF indexing
+   * associated with this \p DofObject.
+   *
+   * If any extra integers are associated with this \p DofObject,
+   * their count and values are unchanged.
    */
   void set_n_systems (const unsigned int s);
+
+  /**
+   * Sets the value on this object of the extra integer associated
+   * with \p index, which should have been obtained via a call to \p
+   * MeshBase::add_elem_integer or \p MeshBase::add_node_integer
+   */
+  void set_extra_integer (const unsigned int index, const dof_id_type value);
+
+  /**
+   * Gets the value on this object of the extra integer associated
+   * with \p index, which should have been obtained via a call to \p
+   * MeshBase::add_elem_integer or \p MeshBase::add_node_integer
+   */
+  dof_id_type get_extra_integer (const unsigned int index) const;
+
+  /**
+   * Sets the value on this object of the extra datum associated
+   * with \p index, which should have been obtained via a call to \p
+   * MeshBase::add_elem_datum or \p MeshBase::add_node_datum using
+   * the same type T.
+   */
+  template <typename T>
+  void set_extra_datum (const unsigned int index, const T value);
+
+  /**
+   * Gets the value on this object of the extra datum associated
+   * with \p index, which should have been obtained via a call to \p
+   * MeshBase::add_elem_datum or \p MeshBase::add_node_datum using
+   * the same type T.
+   */
+  template <typename T>
+  T get_extra_datum (const unsigned int index) const;
+
 
   /**
    * Adds an additional system to the \p DofObject
@@ -342,6 +399,46 @@ public:
                           const unsigned int vg) const;
 
   /**
+   * Assigns a set of extra integers to this \p DofObject.  There will
+   * now be \p n_integers associated; this *replaces*, not augments,
+   * any previous count.
+   *
+   * Any newly-added values will initially be DofObject::invalid_id
+   *
+   * If non-integer data is in the set, each datum of type T should be
+   * counted sizeof(T)/sizeof(dof_id_type) times in \p n_integers.
+   */
+  void add_extra_integers (const unsigned int n_integers);
+
+  /**
+   * Assigns a set of extra integers to this \p DofObject.  There will
+   * now be \p n_integers associated; this *replaces*, not augments,
+   * any previous count.
+   *
+   * Any newly-added values will be copied from \p default_values.
+   *
+   * If non-integer data is in the set, each datum of type T should be
+   * counted sizeof(T)/sizeof(dof_id_type) times in \p n_integers, and
+   * its data should be expressed in \p default_values as per memcpy.
+   */
+  void add_extra_integers (const unsigned int n_integers,
+                           const std::vector<dof_id_type> & default_values);
+
+  /**
+   * Returns how many extra integers are associated to the \p DofObject
+   *
+   * If non-integer data has been associated, each datum of type T
+   * counts for sizeof(T)/sizeof(dof_id_type) times in the return
+   * value.
+   */
+  unsigned int n_extra_integers () const;
+
+  /**
+   * Returns whether extra integers are associated to the \p DofObject
+   */
+  bool has_extra_integers () const;
+
+  /**
    * An invalid \p id to distinguish an uninitialized \p DofObject
    */
   static const dof_id_type invalid_id = static_cast<dof_id_type>(-1);
@@ -394,12 +491,9 @@ public:
    */
   void print_dof_info() const;
 
-  // Deep copy (or almost-copy) of DofObjects is now deprecated in
-  // derived classes; we keep these methods around solely for a couple
+  // Deep copy (or almost-copy) of DofObjects is solely for a couple
   // tricky internal uses.
-#ifndef LIBMESH_ENABLE_DEPRECATED
 private:
-#endif
 
   /**
    * "Copy"-constructor.  Does not copy old_dof_object, but leaves it
@@ -411,8 +505,6 @@ private:
    * Deep-copying assignment operator
    */
   DofObject & operator= (const DofObject & dof_obj);
-
-private:
 
   /**
    * Utility function - for variable \p var in system \p s, figure out what
@@ -456,33 +548,47 @@ private:
    * DoF index information.  This is packed into a contiguous buffer of the following format:
    *
    * \verbatim
-   * [ns end_0 end_1 ... end_{ns-1} (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_0
-   *                                (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_1
-   *                                ...
-   *                                (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_ns ]
+   * [hdr end_0 end_1 ... end_{nps-2} (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_0
+   *                                  (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_1
+   *                                   ...
+   *                                  (ncv_0 idx_0 ncv_1 idx_1 ... ncv_nv idx_nv)_{nps-2} ]
    * \endverbatim
    *
-   * where 'end_s' is the index past the end of the variable group storage for system \p s.
+   * 'hdr' determines whether this \p DofObject \p has_extra_integers()
+   * associated with it; iff so then it is negative.
    *
-   * \note We specifically do not store the end for the last system - this always _idx_buf.size().
+   * The total number of "pseudo systems" is nps := abs(hdr).
    *
-   * Specifically, consider the case of 4 systems, with 3, 0, 1, 2 variable groups, respectively.  The _idx_buf then looks like:
+   * The total number of true systems is
+   * \verbatim
+   * ns = hdr,            hdr >= 0
+   *    = abs(hdr) - 1,   otherwise.
+   * \endverbatim
+   *
+   * 'end_s' is the index past the end of the variable group (or
+   * integer) storage for (pseudo) system \p s.
+   *
+   * \note We specifically do not store the end for the last (pseudo)
+   * system - this always _idx_buf.size().
+   *
+   * As a first example, consider the case of 4 systems, with 3, 0, 1,
+   * 2 variable groups, respectively.  The _idx_buf then looks like:
    *
    * \verbatim
    * [4 10 10 12 () (ncv_0 idx_0 ncv_1 idx_1 ncv_2 idx_2) () (ncv_0 idx_0) (ncv_0 idx_0 ncv_1 idx_1)]
    * [0  1  2  3         4     5     6     7     8     9         10    11      12    13    14    15]
    * \endverbatim
    *
-   * The ending index is then given by:
+   * The ending index for each (pseudo) system is then given by:
    *
    * \verbatim
-   * end_s = _idx_buf.size(), s == (ns-1),
-   *       = _idx_buf[s+1]    otherwise.
+   * end_s = _idx_buf.size(),                        s == (nps-1),
+   *       = _idx_buf[s+1] + has_extra_integers(),   otherwise.
    * \endverbatim
    *
    * The starting indices are not specifically stored, but rather inferred as follows:
    *
-   * start_s = _idx_buf[s];
+   * start_s = abs(_idx_buf[s])
    *
    * Now, the defining characteristic of the \p VariableGroup is that it supports
    * an arbitrary number of variables of the same type.  At the \p DofObject level, what
@@ -502,6 +608,23 @@ private:
    * *within the system*. So for a system with 2 variable groups, 4 and 8 variables each,
    * the 5th variable in the system is the 1st variable in 2nd variable group.
    * (Now of course 0-base everything...  but you get the idea.)
+   *
+   * When hdr is *negative* when cast to a signed type, then we
+   * interpret that to mean there exists one pseudo-system following
+   * the true systems, one for which the _idx_buf data stores the
+   * values associated with add_extra_integer entries, not ncv and idx
+   * data associated with system variables.  We still return only the
+   * number of true systems for n_systems(), but we report
+   * has_extra_integers() as true iff hdr is negative, and abs(hdr)
+   * will reflect the total number of pseudo-systems, n_systems()+1.
+   *
+   * E.g. if we had added two extra integers to the example case
+   * above, the _idx_buf then looks like:
+   *
+   * \verbatim
+   * [-5 11 11 13 17 () (ncv_0 idx_0 ncv_1 idx_1 ncv_2 idx_2) () (ncv_0 idx_0) (ncv_0 idx_0 ncv_1 idx_1) (xtra1 xtra2)]
+   * [0   1  2  3  4         5     6     7     8     9    10         11    12      13    14    15    16      17    18]
+   * \endverbatim
    */
   typedef dof_id_type index_t;
   typedef std::vector<index_t> index_buffer_t;
@@ -528,6 +651,16 @@ private:
    * The ending index for system \p s.
    */
   unsigned int end_idx(const unsigned int s) const;
+
+  /**
+   * The starting index for an extra_integers pseudosystem
+   */
+  unsigned int start_idx_ints() const;
+
+  /**
+   * The ending index for an extra_integers pseudosystem
+   */
+  unsigned int end_idx_ints() const;
 
   // methods only available for unit testing
 #ifdef LIBMESH_IS_UNIT_TESTING
@@ -574,17 +707,18 @@ DofObject::~DofObject ()
 inline
 void DofObject::invalidate_dofs (const unsigned int sys_num)
 {
+  const unsigned int n_sys = this->n_systems();
   // If the user does not specify the system number...
-  if (sys_num >= this->n_systems())
+  if (sys_num >= n_sys)
     {
-      for (unsigned int s=0; s<this->n_systems(); s++)
-        for (unsigned int vg=0; vg<this->n_var_groups(s); vg++)
+      for (auto s : make_range(n_sys))
+        for (auto vg : make_range(this->n_var_groups(s)))
           if (this->n_comp_group(s,vg))
             this->set_vg_dof_base(s,vg,invalid_id);
     }
   // ...otherwise invalidate the dofs for all systems
   else
-    for (unsigned int vg=0; vg<this->n_var_groups(sys_num); vg++)
+    for (auto vg : make_range(this->n_var_groups(sys_num)))
       if (this->n_comp_group(sys_num,vg))
         this->set_vg_dof_base(sys_num,vg,invalid_id);
 }
@@ -620,11 +754,7 @@ void DofObject::invalidate ()
 inline
 void DofObject::clear_dofs ()
 {
-  // vector swap trick to force deallocation
-  index_buffer_t().swap(_idx_buf);
-
-  libmesh_assert_equal_to (this->n_systems(), 0);
-  libmesh_assert (_idx_buf.empty());
+  this->set_n_systems(0);
 }
 
 
@@ -639,7 +769,7 @@ unsigned int DofObject::n_dofs (const unsigned int s,
 
   // Count all variables
   if (var == libMesh::invalid_uint)
-    for (unsigned int v=0; v<this->n_vars(s); v++)
+    for (auto v : make_range(this->n_vars(s)))
       num += this->n_comp(s,v);
 
   // Only count specified variable
@@ -654,7 +784,6 @@ unsigned int DofObject::n_dofs (const unsigned int s,
 inline
 dof_id_type DofObject::id () const
 {
-  libmesh_assert (this->valid_id());
   return _id;
 }
 
@@ -685,8 +814,22 @@ inline
 unique_id_type & DofObject::set_unique_id ()
 {
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
+  libmesh_deprecated();
   return _unique_id;
 #else
+  libmesh_not_implemented();
+#endif
+}
+
+
+
+inline
+void DofObject::set_unique_id (unique_id_type new_id)
+{
+#ifdef LIBMESH_ENABLE_UNIQUE_ID
+  _unique_id = new_id;
+#else
+  libmesh_ignore(new_id);
   libmesh_not_implemented();
 #endif
 }
@@ -748,8 +891,19 @@ bool DofObject::valid_processor_id () const
 inline
 unsigned int DofObject::n_systems () const
 {
-  return _idx_buf.empty() ?
-    0 : cast_int<unsigned int>(_idx_buf[0]);
+  const int hdr = _idx_buf.empty() ?
+    0 : cast_int<int>(dof_id_signed_type(_idx_buf[0]));
+  return hdr >= 0 ? hdr : (-hdr-1);
+}
+
+
+
+inline
+unsigned int DofObject::n_pseudo_systems () const
+{
+  const int hdr = _idx_buf.empty() ?
+    0 : cast_int<int>(dof_id_signed_type(_idx_buf[0]));
+  return std::abs(hdr);
 }
 
 
@@ -883,6 +1037,108 @@ dof_id_type DofObject::dof_number(const unsigned int s,
 
 
 inline
+void
+DofObject::set_extra_integer(const unsigned int index,
+                             const dof_id_type value)
+{
+  libmesh_assert_less(index, this->n_extra_integers());
+  libmesh_assert_less(this->n_pseudo_systems(), _idx_buf.size());
+
+  const unsigned int start_idx_i = this->start_idx_ints();
+
+  libmesh_assert_less(start_idx_i+index, _idx_buf.size());
+  _idx_buf[start_idx_i+index] = value;
+}
+
+
+
+inline
+dof_id_type
+DofObject::get_extra_integer (const unsigned int index) const
+{
+  libmesh_assert_less(index, this->n_extra_integers());
+  libmesh_assert_less(this->n_systems(), _idx_buf.size());
+
+  const unsigned int start_idx_i = this->start_idx_ints();
+
+  libmesh_assert_less(start_idx_i+index, _idx_buf.size());
+  return _idx_buf[start_idx_i+index];
+}
+
+
+
+template <typename T>
+inline
+void
+DofObject::set_extra_datum(const unsigned int index,
+                           const T value)
+{
+#ifndef NDEBUG
+  const unsigned int n_more_integers = (sizeof(T)-1)/sizeof(dof_id_type);
+#endif
+  libmesh_assert_less(index+n_more_integers, this->n_extra_integers());
+  libmesh_assert_less(this->n_pseudo_systems(), _idx_buf.size());
+
+  const unsigned int start_idx_i = this->start_idx_ints();
+
+  libmesh_assert_less(start_idx_i+index+n_more_integers, _idx_buf.size());
+  std::memcpy(&_idx_buf[start_idx_i+index], &value, sizeof(T));
+}
+
+
+
+template <typename T>
+inline
+T
+DofObject::get_extra_datum (const unsigned int index) const
+{
+#ifndef NDEBUG
+  const unsigned int n_more_integers = (sizeof(T)-1)/sizeof(dof_id_type);
+#endif
+  libmesh_assert_less(index+n_more_integers, this->n_extra_integers());
+  libmesh_assert_less(this->n_systems(), _idx_buf.size());
+
+  const unsigned int start_idx_i = this->start_idx_ints();
+
+  libmesh_assert_less(start_idx_i+index+n_more_integers, _idx_buf.size());
+  T returnval;
+  std::memcpy(&returnval, &_idx_buf[start_idx_i+index], sizeof(T));
+  return returnval;
+}
+
+
+
+inline
+unsigned int
+DofObject::n_extra_integers () const
+{
+  if (_idx_buf.empty())
+    return 0;
+
+  const int hdr = dof_id_signed_type(_idx_buf[0]);
+  if (hdr >= 0)
+    return 0;
+
+  const unsigned int start_idx_i = this->start_idx_ints();
+
+  return _idx_buf.size() - start_idx_i;
+}
+
+
+
+inline
+bool
+DofObject::has_extra_integers () const
+{
+  if (_idx_buf.empty())
+    return 0;
+
+  return (dof_id_signed_type(_idx_buf[0]) < 0);
+}
+
+
+
+inline
 std::pair<unsigned int, unsigned int>
 DofObject::var_to_vg_and_offset(const unsigned int s,
                                 const unsigned int var) const
@@ -914,7 +1170,7 @@ bool DofObject::has_dofs (const unsigned int sys) const
 {
   if (sys == libMesh::invalid_uint)
     {
-      for (unsigned int s=0; s<this->n_systems(); s++)
+      for (auto s : make_range(this->n_systems()))
         if (this->n_vars(s))
           return true;
     }
@@ -938,7 +1194,7 @@ unsigned int DofObject::start_idx (const unsigned int s) const
   libmesh_assert_less (s, this->n_systems());
   libmesh_assert_less (s, _idx_buf.size());
 
-  return cast_int<unsigned int>(_idx_buf[s]);
+  return cast_int<unsigned int>(std::abs(dof_id_signed_type(_idx_buf[s])));
 }
 
 
@@ -949,9 +1205,33 @@ unsigned int DofObject::end_idx (const unsigned int s) const
   libmesh_assert_less (s, this->n_systems());
   libmesh_assert_less (s, _idx_buf.size());
 
-  return ((s+1) == this->n_systems()) ?
+  return ((s+1) == this->n_pseudo_systems()) ?
     cast_int<unsigned int>(_idx_buf.size()) :
     cast_int<unsigned int>(_idx_buf[s+1]);
+}
+
+
+
+inline
+unsigned int DofObject::start_idx_ints () const
+{
+  libmesh_assert (this->has_extra_integers());
+
+  unsigned int n_sys = this->n_systems();
+
+  libmesh_assert_less(this->n_systems(), _idx_buf.size());
+  return n_sys ? cast_int<unsigned int>(_idx_buf[this->n_systems()]) :
+                 (n_sys+1);
+}
+
+
+
+inline
+unsigned int DofObject::end_idx_ints () const
+{
+  libmesh_assert (this->has_extra_integers());
+
+  return cast_int<unsigned int>(_idx_buf.size());
 }
 
 
@@ -990,8 +1270,8 @@ dof_id_type DofObject::vg_dof_base(const unsigned int s,
 
   // #ifdef DEBUG
   //   std::cout << " [ ";
-  //   for (std:size_t i=0; i<_idx_buf.size(); i++)
-  //     std::cout << _idx_buf[i] << " ";
+  //   for (auto i : _idx_buf)
+  //     std::cout << i << " ";
   //   std::cout << "]\n";
   // #endif
 

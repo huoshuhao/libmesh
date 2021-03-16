@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -28,6 +28,7 @@
 
 // C++ Includes
 #include <map>
+#include <memory>
 
 namespace libMesh
 {
@@ -41,30 +42,33 @@ class PointLocatorBase;
  * We're using a class instead of a typedef to allow forward
  * declarations and future flexibility.
  *
- * \note \p std::map has no virtual destructor, so downcasting here
- * would be dangerous.
- *
  * \author Roy Stogner
  * \date 2010
  * \brief Maps between boundary ids and PeriodicBoundaryBase objects.
  */
-class PeriodicBoundaries : public std::map<boundary_id_type, PeriodicBoundaryBase *>
+class PeriodicBoundaries : public std::map<boundary_id_type, std::unique_ptr<PeriodicBoundaryBase>>
 {
 public:
   PeriodicBoundaryBase * boundary(boundary_id_type id);
 
   const PeriodicBoundaryBase * boundary(boundary_id_type id) const;
 
-  PeriodicBoundaries() {}
+  PeriodicBoundaries() = default;
 
   ~PeriodicBoundaries();
 
-  // The periodic neighbor of \p e in direction \p side, if it
+  // \returns the periodic neighbor of \p e in direction \p side, if it
   // exists, nullptr otherwise.
+  //
+  // If \p neigh_side is nullptr it is left alone; if not then it is
+  // used to output the side of the neighbor which corresponds to the
+  // given \p side of \p e, or invalid_uint if no possible neighbor or
+  // no corresponding side exists.
   const Elem * neighbor(boundary_id_type boundary_id,
                         const PointLocatorBase & point_locator,
                         const Elem * e,
-                        unsigned int side) const;
+                        unsigned int side,
+                        unsigned int * neigh_side = nullptr) const;
 };
 
 } // namespace libMesh

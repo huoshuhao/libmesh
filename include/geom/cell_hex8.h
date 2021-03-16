@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -27,8 +27,9 @@ namespace libMesh
 {
 
 /**
- * The \p Hex8 is an element in 3D composed of 8 nodes.
- * It is numbered like this:
+ * The \p Hex8 is an element in 3D composed of 8 nodes.  It is
+ * numbered like this:
+ *
  * \verbatim
  *   HEX8: 7        6
  *         o--------z
@@ -43,8 +44,9 @@ namespace libMesh
  *     o--------o
  *     0        1
  * \endverbatim
- * (xi, eta, zeta) are the reference element coordinates associated with
- * the given numbering.
+ *
+ * (xi, eta, zeta) in [-1,1]^3 are the reference element coordinates
+ * associated with the given numbering.
  *
  * \author Benjamin S. Kirk
  * \date 2002
@@ -106,6 +108,8 @@ public:
                                const unsigned int s) const override;
 
   virtual std::vector<unsigned int> nodes_on_side(const unsigned int s) const override;
+
+  virtual std::vector<unsigned int> nodes_on_edge(const unsigned int e) const override;
 
   /**
    * \returns \p true if the specified (local) node number is on the
@@ -169,6 +173,11 @@ public:
    * element node numbers.
    */
   static const unsigned int edge_nodes_map[num_edges][nodes_per_edge];
+
+  /**
+   * This maps each edge to the sides that contain said edge.
+   */
+  static const unsigned int edge_sides_map[num_edges][2];
 
   /**
    * A specialization for computing the area of a hexahedron

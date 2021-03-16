@@ -17,6 +17,11 @@
 #include "libmesh/boundary_info.h"
 #include "libmesh/node.h"
 
+// C++ includes
+#include <functional>
+
+#ifdef LIBMESH_ENABLE_DIRICHLET
+
 // Bring in bits from the libMesh namespace.
 // Just the bits we're using, since this is a header.
 using libMesh::ElemAssembly;
@@ -56,8 +61,7 @@ void AssemblyA0::interior_assembly(FEMContext & c)
 {
   const unsigned int n_components = rb_sys.n_vars();
 
-  // make sure we have three components
-  libmesh_assert_equal_to (n_components, 3);
+  libmesh_assert_less_equal(n_components, 3);
 
   const unsigned int u_var = rb_sys.u_var;
   const unsigned int v_var = rb_sys.v_var;
@@ -77,8 +81,10 @@ void AssemblyA0::interior_assembly(FEMContext & c)
 
   std::vector<unsigned int> n_var_dofs(n_components);
   n_var_dofs[u_var] = c.get_dof_indices(u_var).size();
-  n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
-  n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
+  if (n_components > 1)
+    n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
+  if (n_components > 2)
+    n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
 
   for (unsigned int C_i = 0; C_i < n_components; C_i++)
     {
@@ -115,8 +121,7 @@ void AssemblyA1::interior_assembly(FEMContext & c)
 {
   const unsigned int n_components = rb_sys.n_vars();
 
-  // make sure we have three components
-  libmesh_assert_equal_to (n_components, 3);
+  libmesh_assert_less_equal(n_components, 3);
 
   const unsigned int u_var = rb_sys.u_var;
   const unsigned int v_var = rb_sys.v_var;
@@ -136,8 +141,10 @@ void AssemblyA1::interior_assembly(FEMContext & c)
 
   std::vector<unsigned int> n_var_dofs(n_components);
   n_var_dofs[u_var] = c.get_dof_indices(u_var).size();
-  n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
-  n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
+  if (n_components > 1)
+    n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
+  if (n_components > 2)
+    n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
 
   for (unsigned int C_i = 0; C_i < n_components; C_i++)
     for (unsigned int C_j = 1; C_j < n_components; C_j++)
@@ -157,8 +164,7 @@ void AssemblyA2::interior_assembly(FEMContext & c)
 {
   const unsigned int n_components = rb_sys.n_vars();
 
-  // make sure we have three components
-  libmesh_assert_equal_to (n_components, 3);
+  libmesh_assert_less_equal(n_components, 3);
 
   const unsigned int u_var = rb_sys.u_var;
   const unsigned int v_var = rb_sys.v_var;
@@ -178,8 +184,10 @@ void AssemblyA2::interior_assembly(FEMContext & c)
 
   std::vector<unsigned int> n_var_dofs(n_components);
   n_var_dofs[u_var] = c.get_dof_indices(u_var).size();
-  n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
-  n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
+  if (n_components > 1)
+    n_var_dofs[v_var] = c.get_dof_indices(v_var).size();
+  if (n_components > 2)
+    n_var_dofs[w_var] = c.get_dof_indices(w_var).size();
 
   for (unsigned int C_i = 0; C_i < n_components; C_i++)
     {
@@ -332,6 +340,10 @@ void AssemblyPointLoadZ::get_nodal_rhs_values(std::map<numeric_index_type, Numbe
 
 void InnerProductAssembly::interior_assembly(FEMContext & c)
 {
+  const unsigned int n_components = rb_sys.n_vars();
+
+  libmesh_assert_less_equal(n_components, 3);
+
   const unsigned int u_var = rb_sys.u_var;
   const unsigned int v_var = rb_sys.v_var;
   const unsigned int w_var = rb_sys.w_var;
@@ -345,30 +357,25 @@ void InnerProductAssembly::interior_assembly(FEMContext & c)
   // quadrature points.
   const std::vector<std::vector<RealGradient>>& dphi = elem_fe->get_dphi();
 
-  // The number of local degrees of freedom in each variable
-  const unsigned int n_u_dofs = c.get_dof_indices(u_var).size();
-  const unsigned int n_v_dofs = c.get_dof_indices(v_var).size();
-  const unsigned int n_w_dofs = c.get_dof_indices(w_var).size();
+  // (u_var, v_var, w_var) all have the same number of dofs
+  const unsigned int n_dofs = c.get_dof_indices(u_var).size();
 
   // Now we will build the affine operator
   unsigned int n_qpoints = c.get_element_qrule().n_points();
 
-  DenseSubMatrix<Number> & Kuu = c.get_elem_jacobian(u_var, u_var);
-  DenseSubMatrix<Number> & Kvv = c.get_elem_jacobian(v_var, v_var);
-  DenseSubMatrix<Number> & Kww = c.get_elem_jacobian(w_var, w_var);
+  // Get references to stiffness matrix diagonal blocks
+  std::reference_wrapper<DenseSubMatrix<Number>> Kdiag[3] =
+    {
+      c.get_elem_jacobian(u_var, u_var),
+      c.get_elem_jacobian(v_var, v_var),
+      c.get_elem_jacobian(w_var, w_var)
+    };
 
   for (unsigned int qp=0; qp<n_qpoints; qp++)
-    {
-      for (unsigned int i=0; i<n_u_dofs; i++)
-        for (unsigned int j=0; j<n_u_dofs; j++)
-          Kuu(i,j) += JxW[qp]*(dphi[i][qp]*dphi[j][qp]);
-
-      for (unsigned int i=0; i<n_v_dofs; i++)
-        for (unsigned int j=0; j<n_v_dofs; j++)
-          Kvv(i,j) += JxW[qp]*(dphi[i][qp]*dphi[j][qp]);
-
-      for (unsigned int i=0; i<n_w_dofs; i++)
-        for (unsigned int j=0; j<n_w_dofs; j++)
-          Kww(i,j) += JxW[qp]*(dphi[i][qp]*dphi[j][qp]);
-    }
+    for (unsigned int d=0; d<n_components; ++d)
+      for (unsigned int i=0; i<n_dofs; i++)
+        for (unsigned int j=0; j<n_dofs; j++)
+          Kdiag[d](i,j) += JxW[qp]*(dphi[i][qp]*dphi[j][qp]);
 }
+
+#endif // LIBMESH_ENABLE_DIRICHLET

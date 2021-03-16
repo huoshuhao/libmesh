@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -29,6 +29,7 @@ namespace libMesh
 /**
  * The \p Prism15 is an element in 3D composed of 15 nodes.
  * It is numbered like this:
+ *
  * \verbatim
  *   PRISM15:
  *                5
@@ -59,8 +60,13 @@ namespace libMesh
  *      o---------o---------o
  *      0         6         1
  * \endverbatim
- * (xi, eta, zeta) are the reference element coordinates associated with
- * the given numbering.
+ *
+ * (xi, eta, zeta): { 0  <= xi   <= 1
+ *                  { 0  <= eta  <= 1
+ *                  { -1 <= zeta <= 1
+ *                  { xi + eta   <= 1
+ * are the reference element coordinates associated with the given
+ * numbering.
  *
  * \author Benjamin S. Kirk
  * \date 2003
@@ -123,6 +129,8 @@ public:
 
   virtual std::vector<unsigned int> nodes_on_side(const unsigned int s) const override;
 
+  virtual std::vector<unsigned int> nodes_on_edge(const unsigned int e) const override;
+
   /**
    * \returns \p true if the specified (local) node number is on the
    * specified edge.
@@ -144,8 +152,14 @@ public:
   /**
    * \returns \p Prism15::side_nodes_map[side][side_node] after doing some range checking.
    */
-  virtual unsigned int which_node_am_i(unsigned int side,
+  virtual unsigned int local_side_node(unsigned int side,
                                        unsigned int side_node) const override;
+
+  /**
+   * \returns \p Prism15::edge_nodes_map[edge][edge_node] after doing some range checking.
+   */
+  virtual unsigned int local_edge_node(unsigned int edge,
+                                       unsigned int edge_node) const override;
 
   /**
    * Builds a \p QUAD8 or \p TRI6 built coincident with face i.
@@ -213,6 +227,11 @@ public:
    * element node numbers.
    */
   static const unsigned int edge_nodes_map[num_edges][nodes_per_edge];
+
+  /**
+   * This maps each edge to the sides that contain said edge.
+   */
+  static const unsigned int edge_sides_map[num_edges][2];
 
   /**
    * A specialization for computing the volume of a Prism15.

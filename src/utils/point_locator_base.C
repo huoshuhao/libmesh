@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,6 +22,7 @@
 #include "libmesh/point_locator_tree.h"
 #include "libmesh/elem.h"
 #include "libmesh/enum_point_locator_type.h"
+#include "libmesh/point_locator_nanoflann.h"
 
 namespace libMesh
 {
@@ -38,7 +39,9 @@ PointLocatorBase::PointLocatorBase (const MeshBase & mesh,
   _mesh                    (mesh),
   _initialized             (false),
   _use_close_to_point_tol  (false),
-  _close_to_point_tol      (TOLERANCE)
+  _close_to_point_tol      (TOLERANCE),
+  _use_contains_point_tol  (false),
+  _contains_point_tol      (TOLERANCE)
 {
   // If we have a non-nullptr master, inherit its close-to-point tolerances.
   if (_master)
@@ -78,10 +81,21 @@ std::unique_ptr<PointLocatorBase> PointLocatorBase::build (PointLocatorType t,
     case TREE_LOCAL_ELEMENTS:
       return libmesh_make_unique<PointLocatorTree>(mesh, Trees::LOCAL_ELEMENTS, master);
 
+#ifdef LIBMESH_HAVE_NANOFLANN
+    case NANOFLANN:
+      return libmesh_make_unique<PointLocatorNanoflann>(mesh, master);
+#endif
+
     default:
       libmesh_error_msg("ERROR: Bad PointLocatorType = " << t);
     }
 }
+
+Real PointLocatorBase::get_close_to_point_tol () const
+{
+  return _close_to_point_tol;
+}
+
 
 void PointLocatorBase::set_close_to_point_tol (Real close_to_point_tol)
 {
@@ -89,13 +103,28 @@ void PointLocatorBase::set_close_to_point_tol (Real close_to_point_tol)
   _close_to_point_tol = close_to_point_tol;
 }
 
-
 void PointLocatorBase::unset_close_to_point_tol ()
 {
   _use_close_to_point_tol = false;
   _close_to_point_tol = TOLERANCE;
 }
 
+void PointLocatorBase::set_contains_point_tol(Real contains_point_tol)
+{
+  _use_contains_point_tol = true;
+  _contains_point_tol = contains_point_tol;
+}
+
+void PointLocatorBase::unset_contains_point_tol()
+{
+  _use_contains_point_tol = false;
+  _contains_point_tol = TOLERANCE;
+}
+
+Real PointLocatorBase::get_contains_point_tol() const
+{
+  return _contains_point_tol;
+}
 
 const MeshBase & PointLocatorBase::get_mesh () const
 {

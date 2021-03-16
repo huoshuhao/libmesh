@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -76,11 +76,11 @@ void SFCPartitioner::partition_range(MeshBase & mesh,
     libmesh_not_implemented();
 
   const dof_id_type n_range_elem = std::distance(beg, end);
-  const dof_id_type n_elem = mesh.n_elem();
+  const dof_id_type max_elem_id = mesh.max_elem_id();
 
   // The forward_map maps the range's element ids into a contiguous
   // block of indices.
-  std::vector<dof_id_type> forward_map (n_elem, DofObject::invalid_id);
+  std::vector<dof_id_type> forward_map (max_elem_id, DofObject::invalid_id);
 
   // the reverse_map maps the contiguous ids back
   // to active elements
@@ -112,9 +112,9 @@ void SFCPartitioner::partition_range(MeshBase & mesh,
 
       const Point p = elem->centroid();
 
-      x[forward_map[elem->id()]] = p(0);
-      y[forward_map[elem->id()]] = p(1);
-      z[forward_map[elem->id()]] = p(2);
+      x[forward_map[elem->id()]] = double(p(0));
+      y[forward_map[elem->id()]] = double(p(1));
+      z[forward_map[elem->id()]] = double(p(2));
     }
 
   // We need an integer reference to pass to the Sfc interface.
@@ -166,7 +166,7 @@ void SFCPartitioner::partition_range(MeshBase & mesh,
 
     for (dof_id_type i=0; i<n_range_elem; i++)
       {
-        libmesh_assert_less (static_cast<unsigned int>(table[i] - 1), reverse_map.size());
+        libmesh_assert_less (table[i] - 1, reverse_map.size());
 
         Elem * elem = reverse_map[table[i] - 1];
 

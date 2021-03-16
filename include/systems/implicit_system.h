@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,6 +22,7 @@
 
 // Local Includes
 #include "libmesh/explicit_system.h"
+#include "libmesh/auto_ptr.h"
 
 // C++ includes
 #include <cstddef>
@@ -31,7 +32,6 @@ namespace libMesh
 
 // Forward declarations
 template <typename T> class LinearSolver;
-template <typename T> class SparseMatrix;
 
 /**
  * \brief Manages consistently variables, degrees of freedom, coefficient
@@ -58,16 +58,21 @@ class ImplicitSystem : public ExplicitSystem
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   ImplicitSystem (EquationSystems & es,
                   const std::string & name,
                   const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - The destructor is defaulted out-of-line.
    */
+  ImplicitSystem (const ImplicitSystem &) = delete;
+  ImplicitSystem & operator= (const ImplicitSystem &) = delete;
+  ImplicitSystem (ImplicitSystem &&) = default;
+  ImplicitSystem & operator= (ImplicitSystem &&) = delete;
   virtual ~ImplicitSystem ();
 
   /**
@@ -92,12 +97,6 @@ public:
   virtual void clear () override;
 
   /**
-   * Reinitializes the member data fields associated with
-   * the system, so that, e.g., \p assemble() may be used.
-   */
-  virtual void reinit () override;
-
-  /**
    * Prepares \p matrix and \p rhs for system assembly, then calls
    * user assembly function.
    * Can be overridden in derived classes.
@@ -117,18 +116,19 @@ public:
   virtual std::string system_type () const override { return "Implicit"; }
 
   /**
-   * \returns A pointer to a linear solver appropriate for use in
-   * adjoint and/or sensitivity solves
+   * \returns A dumb pointer to a local std::unique_ptr<LinearSolver>
+   * member which can be used in adjoint and/or sensitivity solves.
    *
-   * This function must be overridden in derived classes, since this
-   * base class does not have a valid LinearSolver to hand back a
-   * pointer to.
+   * To mimic the previous behavior of this function, if the
+   * linear_solver member is already initialized when this function is
+   * called, this function first clears it. That is, no attempt is
+   * made to reuse an existing LinearSolver object. The user MUST NOT
+   * attempt to clean up this pointer, otherwise the std::unique_ptr
+   * held by this class will likely become corrupted.
    *
-   * \deprecated This function's current behavior, i.e. allocating a
-   * LinearSolver and handing it back to the user, makes it very easy
-   * to leak memory, and probably won't have the intended effect,
-   * i.e. of setting some parameters on a LinearSolver that the System
-   * would later use internally.
+   * This function is virtual so it can be overridden in derived
+   * classes if necessary, however most will probably just want to use
+   * the base class behavior.
    */
   virtual LinearSolver<Number> * get_linear_solver() const;
 
@@ -141,12 +141,11 @@ public:
   get_linear_solve_parameters() const;
 
   /**
-   * Releases a pointer to a linear solver acquired by
-   * \p this->get_linear_solver()
+   * Currently a no-op.
    *
-   * \deprecated This function is designed to work with the deprecated
-   * get_linear_solver() function, so its use is now deprecated as
-   * well.
+   * \deprecated This function no longer needs to be called, since
+   * get_linear_solver() no longer returns a heap-allocated dumb
+   * pointer.
    */
   virtual void release_linear_solver(LinearSolver<Number> *) const;
 
@@ -300,75 +299,22 @@ public:
                                                     SensitivityData & product) override;
 
   /**
-   * Matrix iterator typedefs.
+   * \returns A const reference to the system's primary matrix.
    */
-  typedef std::map<std::string, SparseMatrix<Number> *>::iterator        matrices_iterator;
-  typedef std::map<std::string, SparseMatrix<Number> *>::const_iterator  const_matrices_iterator;
+  const SparseMatrix<Number> & get_system_matrix() const;
 
   /**
-   * Adds the additional matrix \p mat_name to this system.  Only
-   * allowed prior to \p assemble().  All additional matrices
-   * have the same sparsity pattern as the matrix used during
-   * solution.  When not \p System but the user wants to
-   * initialize the mayor matrix, then all the additional matrices,
-   * if existent, have to be initialized by the user, too.
+   * \returns A reference to the system's primary matrix.
    */
-  SparseMatrix<Number> & add_matrix (const std::string & mat_name);
-
-  /**
-   * Removes the additional matrix \p mat_name from this system
-   */
-  void remove_matrix(const std::string & mat_name);
-
-  /**
-   * \returns \p true if this \p System has a matrix associated with the
-   * given name, \p false otherwise.
-   */
-  bool have_matrix (const std::string & mat_name) const;
-
-  /**
-   * \returns A const pointer to this system's additional matrix
-   * named \p mat_name, or \p nullptr if no matrix by that name
-   * exists.
-   */
-  const SparseMatrix<Number> * request_matrix (const std::string & mat_name) const;
-
-  /**
-   * \returns A writable pointer to this system's additional matrix
-   * named \p mat_name, or \p nullptr if no matrix by that name
-   * exists.
-   */
-  SparseMatrix<Number> * request_matrix (const std::string & mat_name);
-
-  /**
-   * \returns A const reference to this system's additional matrix
-   * named \p mat_name.
-   *
-   * None of these matrices is involved in the solution process.
-   * Access is only granted when the matrix is already properly
-   * initialized.
-   */
-  const SparseMatrix<Number> & get_matrix (const std::string & mat_name) const;
-
-  /**
-   * \returns A writable reference to this system's additional matrix
-   * named \p mat_name.
-   *
-   * None of these matrices is involved in the solution process.
-   * Access is only granted when the matrix is already properly
-   * initialized.
-   */
-  SparseMatrix<Number> & get_matrix (const std::string & mat_name);
-
-  /**
-   * \returns The number of matrices handled by this system
-   */
-  virtual unsigned int n_matrices () const override;
+  SparseMatrix<Number> & get_system_matrix();
 
   /**
    * The system matrix.  Implicit systems are characterized by
    * the need to solve the linear system Ax=b.  This is the
    * system matrix A.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_system_matrix() instead.
    */
   SparseMatrix<Number> * matrix;
 
@@ -379,54 +325,23 @@ public:
    */
   bool zero_out_matrix_and_rhs;
 
+  /**
+   * This class handles all the details of interfacing with various
+   * linear algebra packages like PETSc or LASPACK.  This is a public
+   * member for backwards compatibility reasons, but in general it's
+   * better to use get_linear_solver() to access this member, since
+   * that function will also handle initialization if it hasn't
+   * already been taken care of.
+   */
+  mutable std::unique_ptr<LinearSolver<Number>> linear_solver;
+
 protected:
-
   /**
-   * Initializes the member data fields associated with
-   * the system, so that, e.g., \p assemble() may be used.
+   * Adds the system matrix
    */
-  virtual void init_data () override;
-
-  /**
-   * Initializes the matrices associated with this system.
-   */
-  virtual void init_matrices ();
-
-private:
-
-  /**
-   * Add the system matrix to the \p _matrices data structure.
-   * Useful in initialization.
-   */
-  void add_system_matrix ();
-
-  /**
-   * Some systems need an arbitrary number of matrices.
-   */
-  std::map<std::string, SparseMatrix<Number> *> _matrices;
-
-  /**
-   * \p true when additional matrices may still be added, \p false otherwise.
-   */
-  bool _can_add_matrices;
+  virtual void add_matrices() override;
 };
 
-
-
-// ------------------------------------------------------------
-// ImplicitSystem inline methods
-inline
-bool ImplicitSystem::have_matrix (const std::string & mat_name) const
-{
-  return (_matrices.count(mat_name));
-}
-
-
-inline
-unsigned int ImplicitSystem::n_matrices () const
-{
-  return cast_int<unsigned int>(_matrices.size());
-}
 
 } // namespace libMesh
 

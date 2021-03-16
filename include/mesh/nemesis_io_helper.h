@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -32,7 +32,8 @@
 namespace libMesh
 {
 
-// Forward declaration
+// Forward declarations
+class EquationSystems;
 template <typename T> class NumericVector;
 
 // The Nemesis API header file.  Should already be
@@ -59,7 +60,9 @@ extern "C" {
  * the same file format.
  *
  * \author John W. Peterson
+ * \author Roy Stogner
  * \date 2008
+ * \date 2020
  */
 class Nemesis_IO_Helper : public ExodusII_IO_Helper
 {
@@ -77,6 +80,13 @@ public:
   virtual ~Nemesis_IO_Helper();
 
   /**
+   * Set the flag indicating whether the complex modulus should be
+   * written when complex numbers are enabled. By default this flag
+   * is set to true.
+   */
+  void write_complex_magnitude (bool val);
+
+  /**
    * Reading functions.  These just allocate memory for you and call the Nemesis
    * routines of the same name.  They also handle error checking for the Nemesis
    * return value.  Be careful calling these at random, some depend on others
@@ -84,9 +94,19 @@ public:
    */
 
   /**
+   * Reads the node ids of nodeset \p id and stores them in the \p
+   * node_list member of this class.
+   *
+   * \note This used to be an ExodusII_IO_Helper function but it use
+   * was completely replaced by read_all_nodesets(). For now, it is
+   * still used by the Nemesis reader so we have moved it here.
+   */
+  void read_nodeset(int id);
+
+  /**
    * Fills: num_nodes_global, num_elems_global, num_elem_blks_global,
    * num_node_sets_global, num_side_sets_global
-   * Call after: read_header()
+   * Call after: read_and_store_header_info()
    * Call before: Any other get_* function from this class
    */
   void get_init_global();
@@ -252,17 +272,6 @@ public:
                     std::vector<int> & elem_mapb);
 
   /**
-   * Writes the specified number of coordinate values starting at the specified
-   * index.
-   */
-  void put_n_coord(unsigned start_node_num,
-                   unsigned num_nodes,
-                   std::vector<Real> & x_coor,
-                   std::vector<Real> & y_coor,
-                   std::vector<Real> & z_coor);
-
-
-  /**
    * This function is specialized from ExodusII_IO_Helper to write only the
    * nodal coordinates stored on the local piece of the Mesh.
    */
@@ -284,16 +293,24 @@ public:
   virtual void write_nodesets(const MeshBase & mesh) override;
 
   /**
-   * This function is specialized from ExodusII_IO_Helper to create the
-   * nodal coordinates stored on the local piece of the Mesh.
-   */
-  virtual void create(std::string filename) override;
-
-  /**
    * Specialization of the initialize function from ExodusII_IO_Helper that
    * also writes global initial data to file.
    */
   virtual void initialize(std::string title, const MeshBase & mesh, bool use_discontinuous=false) override;
+
+  /**
+   * This function uses global communication routines to determine the
+   * number of element blocks across the entire mesh.
+   */
+  void compute_num_global_elem_blocks(const MeshBase & pmesh);
+
+  /**
+   * This function builds the libmesh -> exodus and exodus -> libmesh
+   * node and element maps.  These maps allow us to have a consistent
+   * numbering scheme within an Exodus file, given an existing globally
+   * consistent numbering scheme from LibMesh.
+   */
+  void build_element_and_node_maps(const MeshBase & pmesh);
 
   /**
    * Takes a parallel solution vector containing the node-major
@@ -316,6 +333,14 @@ public:
                             const std::vector<std::string> & output_names);
 
   /**
+   * Outputs EquationSystems current_local_solution nodal values.
+   */
+  void write_nodal_solution(const EquationSystems & es,
+                            const std::vector<std::pair<unsigned int, unsigned int>> & var_nums,
+                            int timestep,
+                            const std::vector<std::string> & output_names);
+
+  /**
    * Takes a solution vector containing the solution for all variables and outputs it to the files
    */
   void write_nodal_solution(const std::vector<Number> & values,
@@ -334,8 +359,8 @@ public:
    * one subdomain at a time.
    */
   void write_element_values(const MeshBase & mesh,
-                            const NumericVector<Number> & parallel_soln,
-                            const std::vector<std::string> & names,
+                            const EquationSystems & es,
+                            const std::vector<std::pair<unsigned int, unsigned int>> &var_nums,
                             int timestep,
                             const std::vector<std::set<subdomain_id_type>> & vars_active_subdomains);
 
@@ -384,6 +409,9 @@ public:
    * To be used with Nemesis::ne_get_init_info().
    */
   char ftype;
+
+  // Stores node ids read in by the read_nodeset() function
+  std::vector<int> node_list;
 
   /**
    * Containers for reading global sideset (boundary conditions) information.  Each vector will
@@ -557,6 +585,25 @@ public:
   std::vector<std::vector<int>> elem_cmap_side_ids;
   std::vector<std::vector<int>> elem_cmap_proc_ids;
 
+  /**
+   * By default, when complex numbers are enabled, for each variable
+   * we write out three values: the real part, "r_u" the imaginary
+   * part, "i_u", and the complex modulus, a_u := sqrt(r_u*r_u +
+   * i_u*i_u), which is also the value returned by
+   * std::abs(std::complex).  Since the modulus is not an independent
+   * quantity, we can set this flag to false and save some file space
+   * by not writing out.
+   */
+  bool write_complex_abs;
+
+protected:
+  /**
+   * read_var_names() dispatches to this function.  We need to
+   * override it slightly for Nemesis.
+   */
+  virtual void read_var_names_impl(const char * var_type,
+                                   int & count,
+                                   std::vector<std::string> & result) override;
 
 private:
   /**
@@ -610,12 +657,6 @@ private:
 
   /**
    * This function uses global communication routines to determine the
-   * number of element blocks across the entire mesh.
-   */
-  void compute_num_global_elem_blocks(const MeshBase & pmesh);
-
-  /**
-   * This function uses global communication routines to determine the
    * number of nodesets across the entire mesh.
    */
   void compute_num_global_nodesets(const MeshBase & pmesh);
@@ -625,14 +666,6 @@ private:
    * number of sidesets across the entire mesh.
    */
   void compute_num_global_sidesets(const MeshBase & pmesh);
-
-  /**
-   * This function builds the libmesh -> exodus and exodus -> libmesh
-   * node and element maps.  These maps allow us to have a consistent
-   * numbering scheme within an Exodus file, given an existing globally
-   * consistent numbering scheme from LibMesh.
-   */
-  void build_element_and_node_maps(const MeshBase & pmesh);
 
   /**
    * This function constructs the set of border node IDs present

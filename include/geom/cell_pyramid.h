@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -130,8 +130,14 @@ public:
   /**
    * \returns \p Pyramid5::side_nodes_map[side][side_node] after doing some range checking.
    */
-  virtual unsigned int which_node_am_i(unsigned int side,
+  virtual unsigned int local_side_node(unsigned int side,
                                        unsigned int side_node) const override;
+
+  /**
+   * \returns \p Pyramid5::edge_nodes_map[edge][edge_node] after doing some range checking.
+   */
+  virtual unsigned int local_edge_node(unsigned int edge,
+                                       unsigned int edge_node) const override;
 
   /**
    * \returns A primitive triangle or quad for face i.
@@ -142,6 +148,21 @@ public:
    * Rebuilds a primitive triangle or quad for face i.
    */
   virtual void side_ptr (std::unique_ptr<Elem> & side, const unsigned int i) override;
+
+  virtual std::vector<unsigned int> sides_on_edge(const unsigned int e) const override final;
+
+  /**
+  * \returns Node 4 (the apex) if \p is at the apex within the tolerance
+  * \p tol. If \p is not at the apex within the tolerance \p tol, will
+  * return invalid_uint.
+  *
+  * The Jacobian at the apex is singular because directional derivatives
+  * are defined in four directions, independently (four edges meet).
+  * Therefore, we can check for this in a caught, failed inverse mapping
+  * and return the correct point without failure if it is the apex.
+  * This behavior _does_ require exceptions to be enabled.
+  */
+  unsigned int local_singular_node(const Point & p, const Real tol = TOLERANCE*TOLERANCE) const override final;
 
 protected:
 

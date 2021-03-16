@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -32,9 +32,12 @@ namespace libMesh
  * like this:
  *
  * \verbatim
- *   EDGE2: o--------o
+ *   EDGE2: o--------o        o---> xi
  *          0        1
  * \endverbatim
+ *
+ * xi in [-1,1] is the reference element coordinate associated with
+ * the given numbering.
  *
  * \author Benjamin S. Kirk
  * \date 2002
@@ -157,7 +160,11 @@ public:
    * Geometric constants for Edge2.
    */
   static const int num_nodes = 2;
+  static const int num_sides = 2;
+  static const int num_edges = 0;
   static const int num_children = 2;
+  static const int nodes_per_side = 1;
+  static const int nodes_per_edge = invalid_int;
 
 protected:
 

@@ -1,4 +1,4 @@
-# Do not edit - automatically generated from ./rebuild_include_HEADERS.sh
+# Do not edit - automatically generated from rebuild_include_HEADERS.sh
 # These are headers we need to compile the libMesh library but should
 # not be installed.  These header files may have implementation
 # details which are not required for the public interface
@@ -23,12 +23,12 @@ include_HEADERS =  \
         base/dof_map.h \
         base/dof_object.h \
         base/factory.h \
+        base/float128_shims.h \
         base/getpot.h \
         base/ghost_point_neighbors.h \
         base/ghosting_functor.h \
         base/id_types.h \
         base/libmesh.h \
-        base/libmesh_C_isnan.h \
         base/libmesh_base.h \
         base/libmesh_common.h \
         base/libmesh_documentation.h \
@@ -57,6 +57,7 @@ include_HEADERS =  \
         enums/enum_fe_family.h \
         enums/enum_inf_map_type.h \
         enums/enum_io_package.h \
+        enums/enum_matrix_build_type.h \
         enums/enum_norm_type.h \
         enums/enum_order.h \
         enums/enum_parallel_type.h \
@@ -87,6 +88,8 @@ include_HEADERS =  \
         fe/fe_base.h \
         fe/fe_compute_data.h \
         fe/fe_interface.h \
+        fe/fe_interface_macros.h \
+        fe/fe_lagrange_shape_1D.h \
         fe/fe_macro.h \
         fe/fe_map.h \
         fe/fe_transformation_base.h \
@@ -99,6 +102,7 @@ include_HEADERS =  \
         fe/inf_fe_instantiate_2D.h \
         fe/inf_fe_instantiate_3D.h \
         fe/inf_fe_macro.h \
+        fe/inf_fe_map.h \
         geom/bounding_box.h \
         geom/cell.h \
         geom/cell_hex.h \
@@ -167,9 +171,11 @@ include_HEADERS =  \
         mesh/boundary_mesh.h \
         mesh/checkpoint_io.h \
         mesh/distributed_mesh.h \
+        mesh/dyna_io.h \
         mesh/ensight_io.h \
         mesh/exodusII_io.h \
         mesh/exodusII_io_helper.h \
+        mesh/exodus_header_info.h \
         mesh/fro_io.h \
         mesh/gmsh_io.h \
         mesh/gmv_io.h \
@@ -222,11 +228,13 @@ include_HEADERS =  \
         numerics/coupling_matrix.h \
         numerics/dense_matrix.h \
         numerics/dense_matrix_base.h \
+        numerics/dense_matrix_base_impl.h \
         numerics/dense_matrix_impl.h \
         numerics/dense_submatrix.h \
         numerics/dense_subvector.h \
         numerics/dense_vector.h \
         numerics/dense_vector_base.h \
+        numerics/diagonal_matrix.h \
         numerics/distributed_vector.h \
         numerics/eigen_core_support.h \
         numerics/eigen_preconditioner.h \
@@ -242,6 +250,7 @@ include_HEADERS =  \
         numerics/petsc_macro.h \
         numerics/petsc_matrix.h \
         numerics/petsc_preconditioner.h \
+        numerics/petsc_shell_matrix.h \
         numerics/petsc_solver_exception.h \
         numerics/petsc_vector.h \
         numerics/preconditioner.h \
@@ -264,37 +273,19 @@ include_HEADERS =  \
         numerics/vector_value.h \
         numerics/wrapped_function.h \
         numerics/wrapped_functor.h \
+        numerics/wrapped_petsc.h \
         numerics/zero_function.h \
-        parallel/attributes.h \
-        parallel/communicator.h \
-        parallel/data_type.h \
         parallel/libmesh_call_mpi.h \
-        parallel/message_tag.h \
-        parallel/op_function.h \
-        parallel/packing.h \
         parallel/parallel.h \
         parallel/parallel_algebra.h \
         parallel/parallel_bin_sorter.h \
-        parallel/parallel_communicator_specializations \
         parallel/parallel_elem.h \
         parallel/parallel_ghost_sync.h \
         parallel/parallel_histogram.h \
-        parallel/parallel_implementation.h \
         parallel/parallel_node.h \
         parallel/parallel_object.h \
         parallel/parallel_only.h \
         parallel/parallel_sort.h \
-        parallel/parallel_sync.h \
-        parallel/post_wait_copy_buffer.h \
-        parallel/post_wait_delete_buffer.h \
-        parallel/post_wait_dereference_shared_ptr.h \
-        parallel/post_wait_dereference_tag.h \
-        parallel/post_wait_free_buffer.h \
-        parallel/post_wait_unpack_buffer.h \
-        parallel/post_wait_work.h \
-        parallel/request.h \
-        parallel/standard_type.h \
-        parallel/status.h \
         parallel/threads.h \
         parallel/threads_allocators.h \
         parallel/threads_none.h \
@@ -324,6 +315,7 @@ include_HEADERS =  \
         quadrature/quadrature_grid.h \
         quadrature/quadrature_jacobi.h \
         quadrature/quadrature_monomial.h \
+        quadrature/quadrature_nodal.h \
         quadrature/quadrature_simpson.h \
         quadrature/quadrature_trap.h \
         reduced_basis/rb_assembly_expansion.h \
@@ -366,6 +358,7 @@ include_HEADERS =  \
         solvers/eigen_time_solver.h \
         solvers/euler2_solver.h \
         solvers/euler_solver.h \
+        solvers/file_solution_history.h \
         solvers/first_order_unsteady_solver.h \
         solvers/linear_solver.h \
         solvers/memory_solution_history.h \
@@ -407,6 +400,7 @@ include_HEADERS =  \
         systems/frequency_system.h \
         systems/generic_projector.h \
         systems/implicit_system.h \
+        systems/inter_mesh_projection.h \
         systems/linear_implicit_system.h \
         systems/newmark_system.h \
         systems/nonlinear_implicit_system.h \
@@ -424,11 +418,33 @@ include_HEADERS =  \
         systems/system_subset.h \
         systems/system_subset_by_subdomain.h \
         systems/transient_system.h \
+        timpi_shims/attributes.h \
+        timpi_shims/communicator.h \
+        timpi_shims/data_type.h \
+        timpi_shims/message_tag.h \
+        timpi_shims/op_function.h \
+        timpi_shims/packing.h \
+        timpi_shims/parallel_communicator_specializations \
+        timpi_shims/parallel_implementation.h \
+        timpi_shims/parallel_sync.h \
+        timpi_shims/post_wait_copy_buffer.h \
+        timpi_shims/post_wait_delete_buffer.h \
+        timpi_shims/post_wait_dereference_shared_ptr.h \
+        timpi_shims/post_wait_dereference_tag.h \
+        timpi_shims/post_wait_free_buffer.h \
+        timpi_shims/post_wait_unpack_buffer.h \
+        timpi_shims/post_wait_work.h \
+        timpi_shims/request.h \
+        timpi_shims/standard_type.h \
+        timpi_shims/status.h \
         utils/compare_types.h \
+        utils/enum_to_string.h \
         utils/error_vector.h \
+        utils/hashing.h \
         utils/hashword.h \
         utils/ignore_warnings.h \
         utils/int_range.h \
+        utils/jacobi_polynomials.h \
         utils/libmesh_nullptr.h \
         utils/location_maps.h \
         utils/mapvector.h \
@@ -440,6 +456,7 @@ include_HEADERS =  \
         utils/perfmon.h \
         utils/plt_loader.h \
         utils/point_locator_base.h \
+        utils/point_locator_nanoflann.h \
         utils/point_locator_tree.h \
         utils/pointer_to_pointer_iter.h \
         utils/pool_allocator.h \

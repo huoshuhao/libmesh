@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -58,6 +58,7 @@
 #include "libmesh/vtk_io.h"
 #include "libmesh/exodusII_io.h"
 #include "libmesh/enum_solver_package.h"
+#include "libmesh/parallel.h"
 
 // These are the include files typically needed for subdivision elements.
 #include "libmesh/face_tri3_subdivision.h"
@@ -66,7 +67,7 @@
 // Bring in everything from the libMesh namespace
 using namespace libMesh;
 
-#ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
+#if defined(LIBMESH_ENABLE_SECOND_DERIVATIVES) && LIBMESH_DIM > 2
 // Function prototype.  This is the function that will assemble
 // the stiffness matrix and the right-hand-side vector ready
 // for solution.
@@ -100,7 +101,7 @@ int main (int argc, char ** argv)
   // Skip this example without --enable-second; requires d2phi
 #ifndef LIBMESH_ENABLE_SECOND_DERIVATIVES
   libmesh_example_requires(false, "--enable-second");
-#else
+#elif LIBMESH_DIM > 2
 
   // Create a 2D mesh distributed across the default MPI communicator.
   // Subdivision surfaces do not appear to work with DistributedMesh yet.
@@ -240,7 +241,7 @@ int main (int argc, char ** argv)
   libMesh::out << "z-displacement of the center point: " << w << std::endl;
   libMesh::out << "Analytic solution for pure bending: " << w_analytic << std::endl;
 
-#endif // #ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
+#endif // LIBMESH_ENABLE_SECOND_DERIVATIVES, LIBMESH_DIM > 2
 
 #endif // #ifdef LIBMESH_ENABLE_AMR
 
@@ -248,7 +249,7 @@ int main (int argc, char ** argv)
   return 0;
 }
 
-#ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
+#if defined(LIBMESH_ENABLE_SECOND_DERIVATIVES) && LIBMESH_DIM > 2
 
 // We now define the matrix and rhs vector assembly function
 // for the shell system.  This function implements the
@@ -322,6 +323,9 @@ void assemble_shell (EquationSystems & es,
   // object handles the index translation from node and element numbers
   // to degree of freedom numbers.
   const DofMap & dof_map = system.get_dof_map();
+
+  // The global system matrix
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
 
   // Define data structures to contain the element stiffness matrix
   // and right-hand-side vector contribution.  Following
@@ -557,7 +561,7 @@ void assemble_shell (EquationSystems & es,
       // for this element.  Add them to the global matrix and
       // right-hand-side vector.  The NumericMatrix::add_matrix()
       // and NumericVector::add_vector() members do this for us.
-      system.matrix->add_matrix (Ke, dof_indices);
+      matrix.add_matrix         (Ke, dof_indices);
       system.rhs->add_vector    (Fe, dof_indices);
     } // end of non-ghost element loop
 
@@ -625,12 +629,12 @@ void assemble_shell (EquationSystems & es,
               const dof_id_type u_dof = nodes[n]->dof_number (system.number(), u_var, 0);
               const dof_id_type v_dof = nodes[n]->dof_number (system.number(), v_var, 0);
               const dof_id_type w_dof = nodes[n]->dof_number (system.number(), w_var, 0);
-              system.matrix->add (u_dof, u_dof, penalty);
-              system.matrix->add (v_dof, v_dof, penalty);
-              system.matrix->add (w_dof, w_dof, penalty);
+              matrix.add (u_dof, u_dof, penalty);
+              matrix.add (v_dof, v_dof, penalty);
+              matrix.add (w_dof, w_dof, penalty);
             }
         }
     } // end of ghost element loop
 }
 
-#endif // LIBMESH_ENABLE_SECOND_DERIVATIVES
+#endif // defined(LIBMESH_ENABLE_SECOND_DERIVATIVES) && LIBMESH_DIM > 2

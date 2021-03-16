@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -16,12 +16,11 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
-// C++ includes
-
-// Local includes
+// libmesh includes
 #include "libmesh/fe.h"
 #include "libmesh/elem.h"
-
+#include "libmesh/fe_interface.h"
+#include "libmesh/enum_to_string.h"
 
 // Anonymous namespace for persistent variables.
 // This allows us to cache the global-to-local mapping transformation
@@ -70,11 +69,13 @@ void clough_compute_coefs(const Elem * elem)
     return;
 #endif
 
-  const Order mapping_order        (elem->default_order());
-  const ElemType mapping_elem_type (elem->type());
+  const FEFamily mapping_family = FEMap::map_fe_type(*elem);
+  const FEType map_fe_type(elem->default_order(), mapping_family);
+
+  // Note: we explicitly don't consider the elem->p_level() when
+  // computing the number of mapping shape functions.
   const int n_mapping_shape_functions =
-    FE<1,LAGRANGE>::n_shape_functions(mapping_elem_type,
-                                      mapping_order);
+    FEInterface::n_shape_functions(map_fe_type, /*extra_order=*/0, elem);
 
   // Degrees of freedom are at vertices and edge midpoints
   std::vector<Point> dofpt;
@@ -85,12 +86,15 @@ void clough_compute_coefs(const Elem * elem)
   std::vector<Real> dxdxi(2);
   std::vector<Real> dxidx(2);
 
+  FEInterface::shape_deriv_ptr shape_deriv_ptr =
+    FEInterface::shape_deriv_function(map_fe_type, elem);
+
   for (int p = 0; p != 2; ++p)
     {
       for (int i = 0; i != n_mapping_shape_functions; ++i)
         {
-          const Real ddxi = FE<1,LAGRANGE>::shape_deriv
-            (mapping_elem_type, mapping_order, i, 0, dofpt[p]);
+          const Real ddxi = shape_deriv_ptr
+            (map_fe_type, elem, i, 0, dofpt[p], /*add_p_level=*/false);
           dxdxi[p] += dofpt[p](0) * ddxi;
         }
     }
@@ -215,23 +219,15 @@ namespace libMesh
 {
 
 
-template <>
-Real FE<1,CLOUGH>::shape(const ElemType,
-                         const Order,
-                         const unsigned int,
-                         const Point &)
-{
-  libmesh_error_msg("Clough-Tocher elements require the real element \nto construct gradient-based degrees of freedom.");
-  return 0.;
-}
-
+LIBMESH_DEFAULT_VECTORIZED_FE(1,CLOUGH)
 
 
 template <>
 Real FE<1,CLOUGH>::shape(const Elem * elem,
                          const Order order,
                          const unsigned int i,
-                         const Point & p)
+                         const Point & p,
+                         const bool add_p_level)
 {
   libmesh_assert(elem);
 
@@ -239,7 +235,8 @@ Real FE<1,CLOUGH>::shape(const Elem * elem,
 
   const ElemType type = elem->type();
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder =
+    static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -269,7 +266,7 @@ Real FE<1,CLOUGH>::shape(const Elem * elem,
                 }
             }
           default:
-            libmesh_error_msg("ERROR: Unsupported element type = " << type);
+            libmesh_error_msg("ERROR: Unsupported element type = " << Utility::enum_to_string(type));
           }
       }
       // by default throw an error
@@ -277,6 +274,29 @@ Real FE<1,CLOUGH>::shape(const Elem * elem,
       libmesh_error_msg("ERROR: Unsupported polynomial order = " << totalorder);
     }
 }
+
+
+
+template <>
+Real FE<1,CLOUGH>::shape(const ElemType,
+                         const Order,
+                         const unsigned int,
+                         const Point &)
+{
+  libmesh_error_msg("Clough-Tocher elements require the real element \nto construct gradient-based degrees of freedom.");
+  return 0.;
+}
+
+template <>
+Real FE<1,CLOUGH>::shape(const FEType fet,
+                         const Elem * elem,
+                         const unsigned int i,
+                         const Point & p,
+                         const bool add_p_level)
+{
+  return FE<1,CLOUGH>::shape(elem, fet.order, i, p, add_p_level);
+}
+
 
 
 
@@ -298,7 +318,8 @@ Real FE<1,CLOUGH>::shape_deriv(const Elem * elem,
                                const Order order,
                                const unsigned int i,
                                const unsigned int j,
-                               const Point & p)
+                               const Point & p,
+                               const bool add_p_level)
 {
   libmesh_assert(elem);
 
@@ -306,7 +327,8 @@ Real FE<1,CLOUGH>::shape_deriv(const Elem * elem,
 
   const ElemType type = elem->type();
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder =
+    static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -334,7 +356,7 @@ Real FE<1,CLOUGH>::shape_deriv(const Elem * elem,
                 }
             }
           default:
-            libmesh_error_msg("ERROR: Unsupported element type = " << type);
+            libmesh_error_msg("ERROR: Unsupported element type = " << Utility::enum_to_string(type));
           }
       }
       // by default throw an error
@@ -344,6 +366,19 @@ Real FE<1,CLOUGH>::shape_deriv(const Elem * elem,
 }
 
 
+template <>
+Real FE<1,CLOUGH>::shape_deriv(const FEType fet,
+                               const Elem * elem,
+                               const unsigned int i,
+                               const unsigned int j,
+                               const Point & p,
+                               const bool add_p_level)
+{
+  return FE<1,CLOUGH>::shape_deriv(elem, fet.order, i, j, p, add_p_level);
+}
+
+
+
 #ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
 
 template <>
@@ -351,7 +386,8 @@ Real FE<1,CLOUGH>::shape_second_deriv(const Elem * elem,
                                       const Order order,
                                       const unsigned int i,
                                       const unsigned int j,
-                                      const Point & p)
+                                      const Point & p,
+                                      const bool add_p_level)
 {
   libmesh_assert(elem);
 
@@ -359,7 +395,8 @@ Real FE<1,CLOUGH>::shape_second_deriv(const Elem * elem,
 
   const ElemType type = elem->type();
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder =
+    static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -387,7 +424,7 @@ Real FE<1,CLOUGH>::shape_second_deriv(const Elem * elem,
                 }
             }
           default:
-            libmesh_error_msg("ERROR: Unsupported element type = " << type);
+            libmesh_error_msg("ERROR: Unsupported element type = " << Utility::enum_to_string(type));
           }
       }
       // by default throw an error
@@ -395,6 +432,31 @@ Real FE<1,CLOUGH>::shape_second_deriv(const Elem * elem,
       libmesh_error_msg("ERROR: Unsupported polynomial order = " << totalorder);
     }
 }
+
+
+template <>
+Real FE<1,CLOUGH>::shape_second_deriv(const ElemType,
+                                      const Order,
+                                      const unsigned int,
+                                      const unsigned int,
+                                      const Point &)
+{
+  libmesh_error_msg("Clough-Tocher elements require the real element \nto construct gradient-based degrees of freedom.");
+  return 0.;
+}
+
+template <>
+Real FE<1,CLOUGH>::shape_second_deriv(const FEType fet,
+                                      const Elem * elem,
+                                      const unsigned int i,
+                                      const unsigned int j,
+                                      const Point & p,
+                                      const bool add_p_level)
+{
+  return FE<1,CLOUGH>::shape_second_deriv(elem, fet.order, i, j, p, add_p_level);
+}
+
+
 
 #endif
 

@@ -5,18 +5,7 @@
 #include <libmesh/mesh.h>
 #include <libmesh/mesh_generation.h>
 
-// THE CPPUNIT_TEST_SUITE_END macro expands to code that involves
-// std::auto_ptr, which in turn produces -Wdeprecated-declarations
-// warnings.  These can be ignored in GCC as long as we wrap the
-// offending code in appropriate pragmas.  We can't get away with a
-// single ignore_warnings.h inclusion at the beginning of this file,
-// since the libmesh headers pull in a restore_warnings.h at some
-// point.  We also don't bother restoring warnings at the end of this
-// file since it's not a header.
-#include <libmesh/ignore_warnings.h>
-
-#include <cppunit/extensions/HelperMacros.h>
-#include <cppunit/TestCase.h>
+#include "libmesh_cppunit.h"
 
 using namespace libMesh;
 
@@ -75,22 +64,57 @@ public:
               (BoundingBox(elem->point(n), elem->point(n)));
           }
 
-        for (unsigned int d=0; d != LIBMESH_DIM; ++d)
-          {
-            const Real widening =
-              (wide_bbox.max()(d) - wide_bbox.min()(d)) / 3;
-            wide_bbox.min()(d) -= widening;
-            wide_bbox.max()(d) += widening;
-          }
+        wide_bbox.scale(1. / 3.);
 
         CPPUNIT_ASSERT(!bbox.contains_point(wide_bbox.min()));
         CPPUNIT_ASSERT(!bbox.contains_point(wide_bbox.max()));
       }
   }
+
+  void test_maps()
+  {
+    for (const auto & elem : _mesh->active_local_element_ptr_range())
+      {
+        for (const auto edge : elem->edge_index_range())
+          for (const auto side_on_edge : elem->sides_on_edge(edge))
+            for (const auto node_on_edge : elem->nodes_on_edge(edge))
+              CPPUNIT_ASSERT(elem->is_node_on_side(node_on_edge, side_on_edge));
+
+        for (const auto side : elem->side_index_range())
+          for (const auto node_on_side : elem->nodes_on_side(side))
+            CPPUNIT_ASSERT(elem->is_node_on_side(node_on_side, side));
+
+        for (const auto edge : elem->edge_index_range())
+          for (const auto node_on_edge : elem->nodes_on_edge(edge))
+            CPPUNIT_ASSERT(elem->is_node_on_edge(node_on_edge, edge));
+
+        for (const auto edge : elem->edge_index_range())
+          for (const auto side_on_edge : elem->sides_on_edge(edge))
+            CPPUNIT_ASSERT(elem->is_edge_on_side(edge, side_on_edge));
+      }
+  }
+
+  void test_contains_point_node()
+  {
+    for (const auto & elem : _mesh->active_local_element_ptr_range())
+      for (const auto n : elem->node_index_range())
+#ifndef LIBMESH_ENABLE_EXCEPTIONS
+        // If this node has a singular Jacobian, we need exceptions in order
+        // to catch the failed inverse_map solve and return the singular
+        // master point. Therefore, if we don't have exceptions and we're
+        // at a singular node, we can't test this. As of the writing of
+        // this comment, this issue exists for only Pyramid elements at
+        // the apex.
+        if (elem->local_singular_node(elem->point(n), TOLERANCE*TOLERANCE) == invalid_uint)
+#endif
+          CPPUNIT_ASSERT(elem->contains_point(elem->point(n)));
+  }
 };
 
 #define ELEMTEST                                \
-  CPPUNIT_TEST( test_bounding_box )
+  CPPUNIT_TEST( test_bounding_box );            \
+  CPPUNIT_TEST( test_maps );                    \
+  CPPUNIT_TEST( test_contains_point_node );
 
 #define INSTANTIATE_ELEMTEST(elemtype)                          \
   class ElemTest_##elemtype : public ElemTest<elemtype> {       \

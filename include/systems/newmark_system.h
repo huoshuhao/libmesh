@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -53,17 +53,22 @@ class NewmarkSystem : public LinearImplicitSystem
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   NewmarkSystem (EquationSystems & es,
                  const std::string & name,
                  const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - The destructor is defaulted out-of-line.
    */
-  ~NewmarkSystem ();
+  NewmarkSystem (const NewmarkSystem &) = delete;
+  NewmarkSystem & operator= (const NewmarkSystem &) = delete;
+  NewmarkSystem (NewmarkSystem &&) = default;
+  NewmarkSystem & operator= (NewmarkSystem &&) = delete;
+  virtual ~NewmarkSystem ();
 
   /**
    * The type of system.

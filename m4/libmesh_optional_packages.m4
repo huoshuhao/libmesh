@@ -2,7 +2,13 @@
 # -------------------------------------------------------------
 AC_DEFUN([LIBMESH_CONFIGURE_OPTIONAL_PACKAGES],
 [
+dnl We need to make sure that we've done AC_ARG_ENABLE(optional), AC_ARG_ENABLE(mpi), AC_ARG_WITH(mpi),
+dnl and AC_ARG_ENABLE(petsc) which all occur in ACSM_COMPILER_CONTROL_ARGS
+AC_REQUIRE([ACSM_COMPILER_CONTROL_ARGS])
 
+dnl We also need to ensure that we've set our compilers, which is where query for a valid
+dnl PETSc configuration
+AC_REQUIRE([LIBMESH_SET_COMPILERS])
 
 # initialize these empty - append below
 # note that
@@ -32,16 +38,24 @@ libmesh_pkgconfig_requires=""
 libmesh_installed_LIBS=""
 
 # --------------------------------------------------------------
-# Allow for disable-optional
+# TIMPI is required - so we should be able to see our TIMPI submodule.
+# If our version of TIMPI doesn't have AM MAINTAINER MODE set, then we
+# need its autoconf submodule initialized too.
 # --------------------------------------------------------------
-AC_ARG_ENABLE(optional,
-              AS_HELP_STRING([--disable-optional],
-                             [build without most optional external libraries]),
-              [AS_CASE("${enableval}",
-                       [yes], [enableoptional=yes],
-                       [no],  [enableoptional=no],
-                       [AC_MSG_ERROR(bad value ${enableval} for --enable-optional)])],
-              [enableoptional=yes])
+AS_IF([test -r $top_srcdir/contrib/timpi/README &&
+       (test -r $top_srcdir/contrib/timpi/m4/autoconf-submodule/acsm_mpi.m4 ||
+        grep "^AM""_MAINTAINER_MODE" $top_srcdir/contrib/timpi/configure.ac >/dev/null)],
+[
+  libmesh_contrib_INCLUDES="-I\$(top_srcdir)/contrib/timpi/src/algorithms/include $libmesh_contrib_INCLUDES"
+  libmesh_contrib_INCLUDES="-I\$(top_srcdir)/contrib/timpi/src/parallel/include $libmesh_contrib_INCLUDES"
+  libmesh_contrib_INCLUDES="-I\$(top_srcdir)/contrib/timpi/src/utilities/include $libmesh_contrib_INCLUDES"
+  # Including timpi_config.h
+  libmesh_contrib_INCLUDES="-I\$(top_builddir)/contrib/timpi/src/utilities/include $libmesh_contrib_INCLUDES"
+],
+[
+  AC_MSG_ERROR([You must run "git submodule update --init --recursive" before configuring libmesh])
+])
+
 
 # Note that even when optional packages are disabled we need to
 # run their m4 macros to get proper AM_CONDITIONALs.  Just be
@@ -138,19 +152,77 @@ LIBMESH_TEST_BOOST_MOVELIB_UNIQUE_PTR
 AC_CONFIG_FILES([contrib/boost/include/Makefile])
 # --------------------------------------------------------------
 
-
 # -------------------------------------------------------------
-# Petsc -- enabled by default
+# MPI -- enabled by default
 # -------------------------------------------------------------
-CONFIGURE_PETSC
-AS_IF([test $enablempi != no],
+AS_IF([test "x$enablempi" = xyes],
       [
-        libmesh_optional_INCLUDES="$MPI_INCLUDES_PATHS $libmesh_optional_INCLUDES"
-        libmesh_optional_LIBS="$MPI_LIBS_PATHS $MPI_LIBS $libmesh_optional_LIBS"
+        ACSM_MPI
+        AS_IF([test "x$enablempi" = xyes],
+              [
+                AS_IF([test x"$MPI_INCLUDES" = x],,[libmesh_optional_INCLUDES="$MPI_INCLUDES $libmesh_optional_INCLUDES"])
+                AS_IF([test x"$MPI_LIBS" != x], [libmesh_optional_LIBS="$MPI_LIBS $libmesh_optional_LIBS"])
+                AS_IF([test x"$MPI_LDFLAGS" != x], [libmesh_optional_LIBS="$MPI_LDFLAGS $libmesh_optional_LIBS"])
+              ])
       ])
 
-AS_IF([test $enablepetsc != no],
+
+# -------------------------------------------------------------------
+# Petsc -- We already called ACSM_SCRAPE_PETSC_CONFIGURE in
+# LIBMESH_SET_COMPILERS, so it's possible that the $enablepetsc
+# flag is already set to "no", in which case we won't do further
+# PETSc configuration here.
+# -------------------------------------------------------------------
+
+dnl Setting --enable-petsc-required causes an error to be emitted
+dnl during configure if PETSc is not detected successfully during
+dnl configure.  This is useful for app codes which require PETSc (like
+dnl MOOSE-based apps), since it prevents situations where libmesh is
+dnl accidentally built without PETSc support (which may take a very
+dnl long time), and then the app fails to compile, requiring you to
+dnl redo everything.
+AC_ARG_ENABLE(petsc-required,
+              AC_HELP_STRING([--enable-petsc-required],
+                             [Error if PETSc is not detected by configure]),
+              [AS_CASE("${enableval}",
+                       [yes], [petscrequired=yes],
+                       [no],  [petscrequired=no],
+                       [AC_MSG_ERROR(bad value ${enableval} for --enable-petsc-required)])],
+                   [petscrequired=no])
+
+dnl Setting --enable-petsc-hypre-required causes an error to be
+dnl emitted during configure if PETSc with builtin Hypre is not
+dnl detected successfully.  This is useful for app codes which require
+dnl both PETSc and Hypre (like MOOSE-based apps), since it prevents
+dnl libmesh from being accidentally built without PETSc and Hypre
+dnl support.
+AC_ARG_ENABLE(petsc-hypre-required,
+              AC_HELP_STRING([--enable-petsc-hypre-required],
+                             [Error if a PETSc with Hypre is not detected by configure]),
+              [AS_CASE("${enableval}",
+                       [yes], [petschyprerequired=yes
+                               petscrequired=yes],
+                       [no],  [petschyprerequired=no],
+                       [AC_MSG_ERROR(bad value ${enableval} for --enable-petsc-hypre-required)])],
+                   [petschyprerequired=no])
+
+dnl If $enablepetsc is already set to no, then we won't call even call
+dnl CONFIGURE_PETSC below.  If PETSc was required, we need to throw an
+dnl error now instead of compiling libmesh in an invalid configuration.
+AS_IF([test "x$enablepetsc" = "xno" && test "x$petscrequired" = "xyes"],
+      dnl We return error code 3 here, since 0 means success and 1 is
+      dnl indistinguishable from other errors.  Ideally, all of the
+      dnl AC_MSG_ERROR calls in our m4 files would return a different
+      dnl error code, but currently this is not implemented.
+      [AC_MSG_ERROR([*** PETSc was not found, but --enable-petsc-required was specified.], 3)])
+
+dnl If PETSc + Hypre is required, throw an error if we don't have it.
+AS_IF([test "x$enablepetsc" = "xno" && test "x$petschyprerequired" = "xyes"],
+      [AC_MSG_ERROR([*** PETSc was not found, but --enable-petsc-hypre-required was specified.], 4)])
+
+AS_IF([test "x$enablepetsc" != "xno"],
       [
+        CONFIGURE_PETSC
         libmesh_optional_INCLUDES="$PETSCINCLUDEDIRS $libmesh_optional_INCLUDES"
         libmesh_optional_LIBS="$PETSCLINKLIBS $libmesh_optional_LIBS"
       ])
@@ -382,7 +454,8 @@ AC_CONFIG_FILES([contrib/tecplot/binary/Makefile])
 # -------------------------------------------------------------
 CONFIGURE_METIS
 AS_IF([test $enablemetis = yes],
-      [libmesh_contrib_INCLUDES="$METIS_INCLUDE $libmesh_contrib_INCLUDES"])
+      [libmesh_contrib_INCLUDES="$METIS_INCLUDE $libmesh_contrib_INCLUDES"
+       libmesh_optional_LIBS="$METIS_LIB $libmesh_optional_LIBS"])
 AM_CONDITIONAL(LIBMESH_ENABLE_METIS, test x$enablemetis = xyes)
 AC_CONFIG_FILES([contrib/metis/Makefile])
 # -------------------------------------------------------------
@@ -394,7 +467,8 @@ AC_CONFIG_FILES([contrib/metis/Makefile])
 # -------------------------------------------------------------
 CONFIGURE_PARMETIS
 AS_IF([test $enableparmetis = yes],
-      [libmesh_contrib_INCLUDES="$PARMETIS_INCLUDE $libmesh_contrib_INCLUDES"])
+      [libmesh_contrib_INCLUDES="$PARMETIS_INCLUDE $libmesh_contrib_INCLUDES"
+       libmesh_optional_LIBS="$PARMETIS_LIB $libmesh_optional_LIBS"])
 AM_CONDITIONAL(LIBMESH_ENABLE_PARMETIS, test x$enableparmetis = xyes)
 AC_CONFIG_FILES([contrib/parmetis/Makefile])
 # -------------------------------------------------------------
@@ -570,6 +644,22 @@ AM_CONDITIONAL(LIBMESH_ENABLE_CAPNPROTO, test x$enablecapnproto = xyes)
 AC_CONFIG_FILES([contrib/capnproto/Makefile])
 # -------------------------------------------------------------
 
+# -------------------------------------------------------------
+# libcurl -- enabled by default
+# Note: I tried to use the m4 files ax_lib_curl.m4 and
+# ax_path_generic.m4 from the autoconf-archive for this, but they
+# would not work (bootstrap failed!) on either Linux or OSX.
+# -------------------------------------------------------------
+CONFIGURE_CURL
+AS_IF([test x$enablecurl = xyes],
+      [
+        libmesh_optional_INCLUDES="$CURL_INCLUDE $libmesh_optional_INCLUDES"
+        libmesh_optional_LIBS="$CURL_LIBRARY $libmesh_optional_LIBS"
+      ])
+AM_CONDITIONAL(LIBMESH_ENABLE_CURL, test x$enablecurl = xyes)
+# -------------------------------------------------------------
+
+
 
 # --------------------------------------------------------------
 # HDF5 -- enabled by default
@@ -697,21 +787,6 @@ AM_CONDITIONAL(LIBMESH_ENABLE_METAPHYSICL, test x$enablemetaphysicl = xyes)
 # -------------------------------------------------------------
 
 
-
-# -------------------------------------------------------------
-# libcurl -- enabled by default
-# Note: I tried to use the m4 files ax_lib_curl.m4 and
-# ax_path_generic.m4 from the autoconf-archive for this, but they
-# would not work (bootstrap failed!) on either Linux or OSX.
-# -------------------------------------------------------------
-CONFIGURE_CURL
-AS_IF([test x$enablecurl = xyes],
-      [
-        libmesh_optional_INCLUDES="$CURL_INCLUDE $libmesh_optional_INCLUDES"
-        libmesh_optional_LIBS="$CURL_LIBRARY $libmesh_optional_LIBS"
-      ])
-AM_CONDITIONAL(LIBMESH_ENABLE_CURL, test x$enablecurl = xyes)
-# -------------------------------------------------------------
 
 
 AS_IF([test "$enableoptional" != no],

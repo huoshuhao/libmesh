@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -16,37 +16,25 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
-// C++ includes
-
 // Local includes
 #include "libmesh/fe.h"
 #include "libmesh/elem.h"
+#include "libmesh/enum_to_string.h"
 
 namespace libMesh
 {
 
 template <>
-RealGradient FE<3,NEDELEC_ONE>::shape(const ElemType,
-                                      const Order,
-                                      const unsigned int,
-                                      const Point &)
-{
-  libmesh_error_msg("Nedelec elements require the element type \nbecause edge orientation is needed.");
-  return RealGradient();
-}
-
-
-
-template <>
 RealGradient FE<3,NEDELEC_ONE>::shape(const Elem * elem,
                                       const Order order,
                                       const unsigned int i,
-                                      const Point & p)
+                                      const Point & p,
+                                      const bool add_p_level)
 {
 #if LIBMESH_DIM == 3
   libmesh_assert(elem);
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder = static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -174,7 +162,7 @@ RealGradient FE<3,NEDELEC_ONE>::shape(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << elem->type());
+            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << Utility::enum_to_string(elem->type()));
           }
       }
 
@@ -182,37 +170,50 @@ RealGradient FE<3,NEDELEC_ONE>::shape(const Elem * elem,
     default:
       libmesh_error_msg("ERROR: Unsupported 3D FE order!: " << totalorder);
     }
-#else
-  return RealGradient();
+#else // LIBMESH_DIM != 3
+  libmesh_ignore(elem, order, i, p, add_p_level);
+  libmesh_not_implemented();
 #endif
 }
 
 
 
-
 template <>
-RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const ElemType,
-                                            const Order,
-                                            const unsigned int,
-                                            const unsigned int,
-                                            const Point &)
+RealGradient FE<3,NEDELEC_ONE>::shape(const ElemType,
+                                      const Order,
+                                      const unsigned int,
+                                      const Point &)
 {
   libmesh_error_msg("Nedelec elements require the element type \nbecause edge orientation is needed.");
   return RealGradient();
 }
+
+
+
+template <>
+RealGradient FE<3,NEDELEC_ONE>::shape(const FEType fet,
+                                      const Elem * elem,
+                                      const unsigned int i,
+                                      const Point & p,
+                                      const bool add_p_level)
+{
+  return FE<3,NEDELEC_ONE>::shape(elem, fet.order, i, p, add_p_level);
+}
+
 
 template <>
 RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const Elem * elem,
                                             const Order order,
                                             const unsigned int i,
                                             const unsigned int j,
-                                            const Point & p)
+                                            const Point & p,
+                                            const bool add_p_level)
 {
 #if LIBMESH_DIM == 3
   libmesh_assert(elem);
   libmesh_assert_less (j, 3);
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder = static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -471,7 +472,7 @@ RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << elem->type());
+            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << Utility::enum_to_string(elem->type()));
           }
       }
 
@@ -480,33 +481,49 @@ RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const Elem * elem,
       libmesh_error_msg("ERROR: Unsupported 3D FE order!: " << totalorder);
     }
 
-#else
-  return RealGradient();
+#else // LIBMESH_DIM != 3
+  libmesh_ignore(elem, order, i, j, p, add_p_level);
+  libmesh_not_implemented();
 #endif
 }
 
 
 
-#ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
+
 template <>
-RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const ElemType,
-                                                   const Order,
-                                                   const unsigned int,
-                                                   const unsigned int,
-                                                   const Point &)
+RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const ElemType,
+                                            const Order,
+                                            const unsigned int,
+                                            const unsigned int,
+                                            const Point &)
 {
   libmesh_error_msg("Nedelec elements require the element type \nbecause edge orientation is needed.");
   return RealGradient();
 }
 
 
+template <>
+RealGradient FE<3,NEDELEC_ONE>::shape_deriv(const FEType fet,
+                                            const Elem * elem,
+                                            const unsigned int i,
+                                            const unsigned int j,
+                                            const Point & p,
+                                            const bool add_p_level)
+{
+  return FE<3,NEDELEC_ONE>::shape_deriv(elem, fet.order, i, j, p, add_p_level);
+}
+
+
+
+#ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
 
 template <>
 RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const Elem * elem,
                                                    const Order order,
                                                    const unsigned int i,
                                                    const unsigned int j,
-                                                   const Point & libmesh_dbg_var(p))
+                                                   const Point & libmesh_dbg_var(p),
+                                                   const bool add_p_level)
 {
 #if LIBMESH_DIM == 3
 
@@ -520,7 +537,7 @@ RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const Elem * elem,
   // j = 5 ==> d^2 phi / dzeta^2
   libmesh_assert_less (j, 6);
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder = static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -729,7 +746,7 @@ RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << elem->type());
+            libmesh_error_msg("ERROR: Unsupported 3D element type!: " << Utility::enum_to_string(elem->type()));
 
           } //switch(type)
 
@@ -739,10 +756,40 @@ RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const Elem * elem,
       libmesh_error_msg("ERROR: Unsupported 3D FE order!: " << totalorder);
     }
 
-#else
-  return RealGradient();
+#else // LIBMESH_DIM != 3
+  libmesh_assert(true || p(0));
+  libmesh_ignore(elem, order, i, j, add_p_level);
+  libmesh_not_implemented();
 #endif
 }
+
+
+
+template <>
+RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const ElemType,
+                                                   const Order,
+                                                   const unsigned int,
+                                                   const unsigned int,
+                                                   const Point &)
+{
+  libmesh_error_msg("Nedelec elements require the element type \nbecause edge orientation is needed.");
+  return RealGradient();
+}
+
+
+
+template <>
+RealGradient FE<3,NEDELEC_ONE>::shape_second_deriv(const FEType fet,
+                                                   const Elem * elem,
+                                                   const unsigned int i,
+                                                   const unsigned int j,
+                                                   const Point & p,
+                                                   const bool add_p_level)
+{
+  return FE<3,NEDELEC_ONE>::shape_second_deriv(elem, fet.order, i, j, p, add_p_level);
+}
+
+
 
 #endif
 

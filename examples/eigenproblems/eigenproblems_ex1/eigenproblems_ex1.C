@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -70,19 +70,15 @@ int main (int argc, char ** argv)
   libmesh_example_requires(false, "--enable-slepc");
 #else
   // Check for proper usage.
-  if (argc < 3)
-    libmesh_error_msg("\nUsage: " << argv[0] << " -n <number of eigen values>");
+  libmesh_error_msg_if(argc < 3, "\nUsage: " << argv[0] << " -n <number of eigen values>");
 
   // Tell the user what we are doing.
-  else
-    {
-      libMesh::out << "Running " << argv[0];
+  libMesh::out << "Running " << argv[0];
 
-      for (int i=1; i<argc; i++)
-        libMesh::out << " " << argv[i];
+  for (int i=1; i<argc; i++)
+    libMesh::out << " " << argv[i];
 
-      libMesh::out << std::endl << std::endl;
-    }
+  libMesh::out << std::endl << std::endl;
 
   // Get the number of eigen values to be computed from argv[2]
   const unsigned int nev = std::atoi(argv[2]);
@@ -135,7 +131,7 @@ int main (int argc, char ** argv)
   // point in using SLEPc with Arpack.
   // ARNOLDI     = default in SLEPc 2.3.1 and earlier
   // KRYLOVSCHUR default in SLEPc 2.3.2 and later
-  // eigen_system.eigen_solver->set_eigensolver_type(KRYLOVSCHUR);
+  // eigen_system.get_eigen_solver().set_eigensolver_type(KRYLOVSCHUR);
 
   // Set the solver tolerance and the maximum number of iterations.
   equation_systems.parameters.set<Real>
@@ -203,7 +199,7 @@ void assemble_mass(EquationSystems & es,
   FEType fe_type = eigen_system.get_dof_map().variable_type(0);
 
   // A reference to the system matrix
-  SparseMatrix<Number> & matrix_A = *eigen_system.matrix_A;
+  SparseMatrix<Number> & matrix_A = eigen_system.get_matrix_A();
 
   // Build a Finite Element object of the specified type.  Since the
   // FEBase::build() member dynamically creates memory we will

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -57,16 +57,21 @@ class LinearImplicitSystem : public ImplicitSystem
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   LinearImplicitSystem (EquationSystems & es,
                         const std::string & name,
                         const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - The destructor is defaulted out-of-line.
    */
+  LinearImplicitSystem (const LinearImplicitSystem &) = delete;
+  LinearImplicitSystem & operator= (const LinearImplicitSystem &) = delete;
+  LinearImplicitSystem (LinearImplicitSystem &&) = default;
+  LinearImplicitSystem & operator= (LinearImplicitSystem &&) = delete;
   virtual ~LinearImplicitSystem ();
 
   /**
@@ -129,12 +134,6 @@ public:
   virtual LinearSolver<Number> * get_linear_solver() const override;
 
   /**
-   * Releases a pointer to a linear solver acquired by
-   * \p this->get_linear_solver()
-   */
-  virtual void release_linear_solver(LinearSolver<Number> *) const override;
-
-  /**
    * Assembles a residual in \p rhs and/or a jacobian in \p matrix,
    * as requested.
    */
@@ -148,14 +147,6 @@ public:
    * the system type in an equation system file.
    */
   virtual std::string system_type () const override { return "LinearImplicit"; }
-
-  /**
-   * The \p LinearSolver defines the interface used to
-   * solve the linear_implicit system.  This class handles all the
-   * details of interfacing with various linear algebra packages
-   * like PETSc or LASPACK.
-   */
-  std::unique_ptr<LinearSolver<Number>> linear_solver;
 
   /**
    * \returns The number of iterations

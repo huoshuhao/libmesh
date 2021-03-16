@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -24,6 +24,7 @@
 #include "libmesh/metis_partitioner.h"
 #include "libmesh/replicated_mesh.h"
 #include "libmesh/utility.h"
+#include "libmesh/parallel.h"
 #include "libmesh/point.h"
 #ifdef LIBMESH_HAVE_NANOFLANN
 #include "libmesh/nanoflann.hpp"
@@ -83,7 +84,8 @@ public:
 // ReplicatedMesh class member functions
 ReplicatedMesh::ReplicatedMesh (const Parallel::Communicator & comm_in,
                                 unsigned char d) :
-  UnstructuredMesh (comm_in,d)
+  UnstructuredMesh (comm_in,d),
+  _n_nodes(0), _n_elem(0)
 {
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   // In serial we just need to reset the next unique id to zero
@@ -105,7 +107,8 @@ ReplicatedMesh::~ReplicatedMesh ()
 // make sure the compiler doesn't give us a default (non-deep) copy
 // constructor instead.
 ReplicatedMesh::ReplicatedMesh (const ReplicatedMesh & other_mesh) :
-  UnstructuredMesh (other_mesh)
+  UnstructuredMesh (other_mesh),
+  _n_nodes(0), _n_elem(0) // copy_* will increment this
 {
   this->copy_nodes_and_elements(other_mesh, true);
 
@@ -140,7 +143,8 @@ ReplicatedMesh::ReplicatedMesh (const ReplicatedMesh & other_mesh) :
 
 
 ReplicatedMesh::ReplicatedMesh (const UnstructuredMesh & other_mesh) :
-  UnstructuredMesh (other_mesh)
+  UnstructuredMesh (other_mesh),
+  _n_nodes(0), _n_elem(0) // copy_* will increment this
 {
   this->copy_nodes_and_elements(other_mesh, true);
 
@@ -180,7 +184,7 @@ const Point & ReplicatedMesh::point (const dof_id_type i) const
 
 const Node * ReplicatedMesh::node_ptr (const dof_id_type i) const
 {
-  libmesh_assert_less (i, this->n_nodes());
+  libmesh_assert_less (i, this->max_node_id());
   libmesh_assert(_nodes[i]);
   libmesh_assert_equal_to (_nodes[i]->id(), i); // This will change soon
 
@@ -192,7 +196,7 @@ const Node * ReplicatedMesh::node_ptr (const dof_id_type i) const
 
 Node * ReplicatedMesh::node_ptr (const dof_id_type i)
 {
-  libmesh_assert_less (i, this->n_nodes());
+  libmesh_assert_less (i, this->max_node_id());
   libmesh_assert(_nodes[i]);
   libmesh_assert_equal_to (_nodes[i]->id(), i); // This will change soon
 
@@ -204,7 +208,7 @@ Node * ReplicatedMesh::node_ptr (const dof_id_type i)
 
 const Node * ReplicatedMesh::query_node_ptr (const dof_id_type i) const
 {
-  if (i >= this->n_nodes())
+  if (i >= this->max_node_id())
     return nullptr;
   libmesh_assert (_nodes[i] == nullptr ||
                   _nodes[i]->id() == i); // This will change soon
@@ -217,7 +221,7 @@ const Node * ReplicatedMesh::query_node_ptr (const dof_id_type i) const
 
 Node * ReplicatedMesh::query_node_ptr (const dof_id_type i)
 {
-  if (i >= this->n_nodes())
+  if (i >= this->max_node_id())
     return nullptr;
   libmesh_assert (_nodes[i] == nullptr ||
                   _nodes[i]->id() == i); // This will change soon
@@ -230,7 +234,7 @@ Node * ReplicatedMesh::query_node_ptr (const dof_id_type i)
 
 const Elem * ReplicatedMesh::elem_ptr (const dof_id_type i) const
 {
-  libmesh_assert_less (i, this->n_elem());
+  libmesh_assert_less (i, this->max_elem_id());
   libmesh_assert(_elements[i]);
   libmesh_assert_equal_to (_elements[i]->id(), i); // This will change soon
 
@@ -242,7 +246,7 @@ const Elem * ReplicatedMesh::elem_ptr (const dof_id_type i) const
 
 Elem * ReplicatedMesh::elem_ptr (const dof_id_type i)
 {
-  libmesh_assert_less (i, this->n_elem());
+  libmesh_assert_less (i, this->max_elem_id());
   libmesh_assert(_elements[i]);
   libmesh_assert_equal_to (_elements[i]->id(), i); // This will change soon
 
@@ -254,7 +258,7 @@ Elem * ReplicatedMesh::elem_ptr (const dof_id_type i)
 
 const Elem * ReplicatedMesh::query_elem_ptr (const dof_id_type i) const
 {
-  if (i >= this->n_elem())
+  if (i >= this->max_elem_id())
     return nullptr;
   libmesh_assert (_elements[i] == nullptr ||
                   _elements[i]->id() == i); // This will change soon
@@ -267,7 +271,7 @@ const Elem * ReplicatedMesh::query_elem_ptr (const dof_id_type i) const
 
 Elem * ReplicatedMesh::query_elem_ptr (const dof_id_type i)
 {
-  if (i >= this->n_elem())
+  if (i >= this->max_elem_id())
     return nullptr;
   libmesh_assert (_elements[i] == nullptr ||
                   _elements[i]->id() == i); // This will change soon
@@ -292,7 +296,7 @@ Elem * ReplicatedMesh::add_elem (Elem * e)
 
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   if (!e->valid_unique_id())
-    e->set_unique_id() = _next_unique_id++;
+    e->set_unique_id(_next_unique_id++);
   else
    _next_unique_id = std::max(_next_unique_id, e->unique_id()+1);
 #endif
@@ -301,6 +305,12 @@ Elem * ReplicatedMesh::add_elem (Elem * e)
 
   if (id < _elements.size())
     {
+      // This should *almost* never happen, but we rely on it when
+      // using allgather to replicate a not-yet-actually-replicated
+      // ReplicatedMesh under construction in parallel.
+      if (e == _elements[id])
+        return e;
+
       // Overwriting existing elements is still probably a mistake.
       libmesh_assert(!_elements[id]);
     }
@@ -309,9 +319,27 @@ Elem * ReplicatedMesh::add_elem (Elem * e)
       _elements.resize(id+1, nullptr);
     }
 
+  ++_n_elem;
   _elements[id] = e;
 
+  // Make sure any new element is given space for any extra integers
+  // we've requested
+  e->add_extra_integers(_elem_integer_names.size(),
+                        _elem_integer_default_values);
+
+  // And set mapping type and data on any new element
+  e->set_mapping_type(this->default_mapping_type());
+  e->set_mapping_data(this->default_mapping_data());
+
   return e;
+}
+
+Elem * ReplicatedMesh::add_elem (std::unique_ptr<Elem> e)
+{
+  // The mesh now takes ownership of the Elem. Eventually the guts of
+  // add_elem() will get moved to a private helper function, and
+  // calling add_elem() directly will be deprecated.
+  return add_elem(e.release());
 }
 
 
@@ -320,7 +348,9 @@ Elem * ReplicatedMesh::insert_elem (Elem * e)
 {
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   if (!e->valid_unique_id())
-    e->set_unique_id() = _next_unique_id++;
+    e->set_unique_id(_next_unique_id++);
+  else
+   _next_unique_id = std::max(_next_unique_id, e->unique_id()+1);
 #endif
 
   dof_id_type eid = e->id();
@@ -333,9 +363,27 @@ Elem * ReplicatedMesh::insert_elem (Elem * e)
       this->delete_elem(oldelem);
     }
 
-  _elements[e->id()] = e;
+  ++_n_elem;
+  _elements[eid] = e;
+
+  // Make sure any new element is given space for any extra integers
+  // we've requested
+  e->add_extra_integers(_elem_integer_names.size(),
+                        _elem_integer_default_values);
+
+  // And set mapping type and data on any new element
+  e->set_mapping_type(this->default_mapping_type());
+  e->set_mapping_data(this->default_mapping_data());
 
   return e;
+}
+
+Elem * ReplicatedMesh::insert_elem (std::unique_ptr<Elem> e)
+{
+  // The mesh now takes ownership of the Elem. Eventually the guts of
+  // insert_elem(Elem*) will get moved to a private helper function, and
+  // calling insert_elem(Elem*) directly will be deprecated.
+  return insert_elem(e.release());
 }
 
 
@@ -374,6 +422,7 @@ void ReplicatedMesh::delete_elem(Elem * e)
   this->get_boundary_info().remove(e);
 
   // delete the element
+  --_n_elem;
   delete e;
 
   // explicitly zero the pointer
@@ -401,12 +450,6 @@ Node * ReplicatedMesh::add_point (const Point & p,
                                   const dof_id_type id,
                                   const processor_id_type proc_id)
 {
-  //   // We only append points with ReplicatedMesh
-  //   libmesh_assert(id == DofObject::invalid_id || id == _nodes.size());
-  //   Node *n = Node::build(p, _nodes.size()).release();
-  //   n->processor_id() = proc_id;
-  //   _nodes.push_back (n);
-
   Node * n = nullptr;
 
   // If the user requests a valid id, either
@@ -431,11 +474,17 @@ Node * ReplicatedMesh::add_point (const Point & p,
                       cast_int<dof_id_type>(_nodes.size()-1) : id).release();
       n->processor_id() = proc_id;
 
+      n->add_extra_integers(_node_integer_names.size(),
+                            _node_integer_default_values);
+
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
       if (!n->valid_unique_id())
-        n->set_unique_id() = _next_unique_id++;
+        n->set_unique_id(_next_unique_id++);
+      else
+       _next_unique_id = std::max(_next_unique_id, n->unique_id()+1);
 #endif
 
+      ++_n_nodes;
       if (id == DofObject::invalid_id)
         _nodes.back() = n;
       else
@@ -453,41 +502,67 @@ Node * ReplicatedMesh::add_point (const Point & p,
 Node * ReplicatedMesh::add_node (Node * n)
 {
   libmesh_assert(n);
-  // We only append points with ReplicatedMesh
-  libmesh_assert(!n->valid_id() || n->id() == _nodes.size());
 
-  n->set_id (cast_int<dof_id_type>(_nodes.size()));
+  // If the user requests a valid id, either set the existing
+  // container entry or resize the container to fit the new node.
+  if (n->valid_id())
+    {
+      const dof_id_type id = n->id();
+      if (id < _nodes.size())
+        libmesh_assert(!_nodes[id]);
+      else
+        _nodes.resize(id+1); // default nullptr
+
+      _nodes[id] = n;
+    }
+  else
+    {
+      n->set_id (cast_int<dof_id_type>(_nodes.size()));
+      _nodes.push_back(n);
+    }
+
+  ++_n_nodes;
 
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   if (!n->valid_unique_id())
-    n->set_unique_id() = _next_unique_id++;
+    n->set_unique_id(_next_unique_id++);
+  else
+   _next_unique_id = std::max(_next_unique_id, n->unique_id()+1);
 #endif
 
-  _nodes.push_back(n);
+  n->add_extra_integers(_node_integer_names.size(),
+                        _node_integer_default_values);
 
   return n;
+}
+
+Node * ReplicatedMesh::add_node (std::unique_ptr<Node> n)
+{
+  // The mesh now takes ownership of the Node. Eventually the guts of
+  // add_node() will get moved to a private helper function, and
+  // calling add_node() directly will be deprecated.
+  return add_node(n.release());
 }
 
 
 
 Node * ReplicatedMesh::insert_node(Node * n)
 {
-  if (!n)
-    libmesh_error_msg("Error, attempting to insert nullptr node.");
-
-  if (n->id() == DofObject::invalid_id)
-    libmesh_error_msg("Error, cannot insert node with invalid id.");
+  libmesh_error_msg_if(!n, "Error, attempting to insert nullptr node.");
+  libmesh_error_msg_if(n->id() == DofObject::invalid_id, "Error, cannot insert node with invalid id.");
 
   if (n->id() < _nodes.size())
     {
-      // Don't allow inserting on top of an existing Node.
+      // Trying to add an existing node is a no-op.  This lets us use
+      // a straightforward MeshCommunication::allgather() to fix a
+      // not-actually-replicated-yet ReplicatedMesh, as occurs when
+      // reading Nemesis files.
+      if (n->valid_id() && _nodes[n->id()] == n)
+        return n;
 
-      // Doing so doesn't have to be *error*, in the case where a
-      // redundant insert is done, but when that happens we ought to
-      // always be able to make the code more efficient by avoiding
-      // the redundant insert, so let's keep screaming "Error" here.
-      if (_nodes[ n->id() ] != nullptr)
-        libmesh_error_msg("Error, cannot insert node on top of existing node.");
+      // Don't allow anything else to replace an existing Node.
+      libmesh_error_msg_if(_nodes[ n->id() ] != nullptr,
+                           "Error, cannot insert new node on top of existing node.");
     }
   else
     {
@@ -499,11 +574,17 @@ Node * ReplicatedMesh::insert_node(Node * n)
 
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   if (!n->valid_unique_id())
-    n->set_unique_id() = _next_unique_id++;
+    n->set_unique_id(_next_unique_id++);
+  else
+   _next_unique_id = std::max(_next_unique_id, n->unique_id()+1);
 #endif
+
+  n->add_extra_integers(_node_integer_names.size(),
+                        _node_integer_default_values);
 
   // We have enough space and this spot isn't already occupied by
   // another node, so go ahead and add it.
+  ++_n_nodes;
   _nodes[ n->id() ] = n;
 
   // If we made it this far, we just inserted the node the user handed
@@ -511,6 +592,13 @@ Node * ReplicatedMesh::insert_node(Node * n)
   return n;
 }
 
+Node * ReplicatedMesh::insert_node(std::unique_ptr<Node> n)
+{
+  // The mesh now takes ownership of the Node. Eventually the guts of
+  // insert_node(Node*) will get moved to a private helper function, and
+  // calling insert_node(Node*) directly will be deprecated.
+  return insert_node(n.release());
+}
 
 
 void ReplicatedMesh::delete_node(Node * n)
@@ -542,8 +630,10 @@ void ReplicatedMesh::delete_node(Node * n)
 
   // Delete the node from the BoundaryInfo object
   this->get_boundary_info().remove(n);
+  _constraint_rows.erase(n);
 
   // delete the node
+  --_n_nodes;
   delete n;
 
   // explicitly zero the pointer
@@ -579,6 +669,7 @@ void ReplicatedMesh::clear ()
   for (auto & elem : _elements)
     delete elem;
 
+  _n_elem = 0;
   _elements.clear();
 
   // clear the nodes data structure
@@ -588,6 +679,7 @@ void ReplicatedMesh::clear ()
   for (auto & node : _nodes)
     delete node;
 
+  _n_nodes = 0;
   _nodes.clear();
 }
 
@@ -611,6 +703,13 @@ unique_id_type ReplicatedMesh::parallel_max_unique_id() const
   unique_id_type max_local = _next_unique_id;
   this->comm().max(max_local);
   return max_local;
+}
+
+
+
+void ReplicatedMesh::set_next_unique_id(unique_id_type id)
+{
+  _next_unique_id = id;
 }
 #endif
 
@@ -721,8 +820,10 @@ void ReplicatedMesh::renumber_nodes_and_elements ()
             else // This node is orphaned, delete it!
               {
                 this->get_boundary_info().remove (nd);
+                _constraint_rows.erase(nd);
 
                 // delete the node
+                --_n_nodes;
                 delete nd;
                 nd = nullptr;
               }
@@ -754,8 +855,10 @@ void ReplicatedMesh::renumber_nodes_and_elements ()
             // remove any boundary information associated with
             // this node
             this->get_boundary_info().remove (node);
+            _constraint_rows.erase(node);
 
             // delete the node
+            --_n_nodes;
             delete node;
             node = nullptr;
           }
@@ -894,10 +997,30 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
                         // We need to set h_min to some value. It's too expensive to
                         // search for the element that actually contains this node,
                         // since that would require a PointLocator. As a result, we
-                        // just use the first element in the mesh to give us hmin.
-                        const Elem * first_active_elem = *mesh_array[i]->active_elements_begin();
-                        h_min = first_active_elem->hmin();
-                        h_min_updated = true;
+                        // just use the first (non-NodeElem!) element in the mesh to
+                        // give us hmin if it's never been set before.
+                        if (!h_min_updated)
+                          {
+                            for (const auto & elem : mesh_array[i]->active_element_ptr_range())
+                              {
+                                Real current_h_min = elem->hmin();
+                                if (current_h_min > 0.)
+                                  {
+                                    h_min = current_h_min;
+                                    h_min_updated = true;
+                                    break;
+                                  }
+                              }
+
+                            // If, after searching all the active elements, we did not update
+                            // h_min, give up and set h_min to 1 so that we don't repeat this
+                            // fruitless search
+                            if (!h_min_updated)
+                              {
+                                h_min_updated = true;
+                                h_min = 1.0;
+                              }
+                          }
                       }
                   }
               }
@@ -982,6 +1105,14 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
             }
         }
 
+      // At this point, if h_min==0 it means that there were at least two coincident
+      // nodes on the surfaces being stitched, and we don't currently support that case.
+      // (It might be possible to support, but getting it exactly right would be tricky
+      // and probably not worth the extra complications to the "normal" case.)
+      libmesh_error_msg_if(h_min < std::numeric_limits<Real>::epsilon(),
+                           "Coincident nodes detected on source and/or target "
+                           "surface, stitching meshes is not possible.");
+
       // We require nanoflann for the "binary search" (really kd-tree)
       // option to work. If it's not available, turn that option off,
       // warn the user, and fall back on the N^2 search algorithm.
@@ -1004,8 +1135,9 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
 
           // Create the dataset needed to build the kd tree with nanoflann
           std::vector<std::pair<Point, dof_id_type>> this_mesh_nodes(this_boundary_node_ids.size());
-          std::set<dof_id_type>::iterator current_node = this_boundary_node_ids.begin();
-          for (unsigned int ctr = 0; current_node != this_boundary_node_ids.end(); ++current_node, ++ctr)
+          std::set<dof_id_type>::iterator current_node = this_boundary_node_ids.begin(),
+                                          node_ids_end = this_boundary_node_ids.end();
+          for (unsigned int ctr = 0; current_node != node_ids_end; ++current_node, ++ctr)
           {
             this_mesh_nodes[ctr].first = this->point(*current_node);
             this_mesh_nodes[ctr].second = *current_node;
@@ -1035,12 +1167,25 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
           // If the 2 maps don't have the same size, it means we have overwritten a value in node_to_node_map
           // It means one node in this mesh is the nearest neighbor of several nodes in other mesh.
           // Not possible !
-          if (node_to_node_map.size() != other_to_this_node_map.size())
-            libmesh_error_msg("Error: Found multiple matching nodes in stitch_meshes");
+          libmesh_error_msg_if(node_to_node_map.size() != other_to_this_node_map.size(),
+                               "Error: Found multiple matching nodes in stitch_meshes");
 #endif
         }
         else
         {
+          // In the unlikely event that two meshes composed entirely of
+          // NodeElems are being stitched together, we will not have
+          // selected a valid h_min value yet, and the distance
+          // comparison below will be true for essentially any two
+          // nodes. In this case we simply fall back on an absolute
+          // distance check.
+          if (!h_min_updated)
+            {
+              libmesh_warning("No valid h_min value was found, falling back on "
+                              "absolute distance check in the N^2 search algorithm.");
+              h_min = 1.;
+            }
+
           // Otherwise, use a simple N^2 search to find the closest matching points. This can be helpful
           // in the case that we have tolerance issues which cause mismatch between the two surfaces
           // that are being stitched.
@@ -1059,8 +1204,8 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
               if (node_distance < tol*h_min)
               {
                 // Make sure we didn't already find a matching node!
-                if (found_matching_nodes)
-                  libmesh_error_msg("Error: Found multiple matching nodes in stitch_meshes");
+                libmesh_error_msg_if(found_matching_nodes,
+                                     "Error: Found multiple matching nodes in stitch_meshes");
 
                 node_to_node_map[this_node_id] = other_node_id;
                 other_to_this_node_map[other_node_id] = this_node_id;
@@ -1107,8 +1252,8 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
           std::size_t n_matching_nodes = node_to_node_map.size();
           std::size_t this_mesh_n_nodes = this_boundary_node_ids.size();
           std::size_t other_mesh_n_nodes = other_boundary_node_ids.size();
-          if ((n_matching_nodes != this_mesh_n_nodes) || (n_matching_nodes != other_mesh_n_nodes))
-            libmesh_error_msg("Error: We expected the number of nodes to match.");
+          libmesh_error_msg_if((n_matching_nodes != this_mesh_n_nodes) || (n_matching_nodes != other_mesh_n_nodes),
+                               "Error: We expected the number of nodes to match.");
         }
     }
   else
@@ -1174,6 +1319,17 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
                                std::get<1>(t),
                                std::get<2>(t));
 
+      const auto & other_ns_id_to_name = other_boundary.get_nodeset_name_map();
+      auto & ns_id_to_name = boundary.set_nodeset_name_map();
+      ns_id_to_name.insert(other_ns_id_to_name.begin(), other_ns_id_to_name.end());
+
+      const auto & other_ss_id_to_name = other_boundary.get_sideset_name_map();
+      auto & ss_id_to_name = boundary.set_sideset_name_map();
+      ss_id_to_name.insert(other_ss_id_to_name.begin(), other_ss_id_to_name.end());
+
+      const auto & other_es_id_to_name = other_boundary.get_edgeset_name_map();
+      auto & es_id_to_name = boundary.set_edgeset_name_map();
+      es_id_to_name.insert(other_es_id_to_name.begin(), other_es_id_to_name.end());
     } // end if (other_mesh)
 
   // Finally, we need to "merge" the overlapping nodes
@@ -1332,7 +1488,10 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
         }
     }
 
-  this->prepare_for_use( /*skip_renumber_nodes_and_elements= */ false, skip_find_neighbors);
+  const bool old_allow_find_neighbors = this->allow_find_neighbors();
+  this->allow_find_neighbors(!skip_find_neighbors);
+  this->prepare_for_use();
+  this->allow_find_neighbors(old_allow_find_neighbors);
 
   // After the stitching, we may want to clear boundary IDs from element
   // faces that are now internal to the mesh
@@ -1340,26 +1499,8 @@ void ReplicatedMesh::stitching_helper (const ReplicatedMesh * other_mesh,
     {
       LOG_SCOPE("stitch_meshes clear bcids", "ReplicatedMesh");
 
-      // Container to catch boundary IDs passed back from BoundaryInfo.
-      std::vector<boundary_id_type> bc_ids;
-
-      for (auto & el : element_ptr_range())
-        for (auto side_id : el->side_index_range())
-          if (el->neighbor_ptr(side_id) != nullptr)
-            {
-              // Completely remove the side from the boundary_info object if it has either
-              // this_mesh_boundary_id or other_mesh_boundary_id.
-              this->get_boundary_info().boundary_ids (el, side_id, bc_ids);
-
-              if (std::find(bc_ids.begin(), bc_ids.end(), this_mesh_boundary_id) != bc_ids.end() ||
-                  std::find(bc_ids.begin(), bc_ids.end(), other_mesh_boundary_id) != bc_ids.end())
-                this->get_boundary_info().remove_side(el, side_id);
-            }
-
-      // Removing stitched-away boundary ids might have removed an id
-      // *entirely*, so we need to recompute boundary id sets to check
-      // for that.
-      this->get_boundary_info().regenerate_id_sets();
+      this->get_boundary_info().clear_stitched_boundary_side_ids(
+          this_mesh_boundary_id, other_mesh_boundary_id, /*clear_nodeset_data=*/true);
     }
 }
 
@@ -1370,5 +1511,187 @@ dof_id_type ReplicatedMesh::n_active_elem () const
                                                  this->active_elements_end()));
 }
 
+std::vector<dof_id_type>
+ReplicatedMesh::get_disconnected_subdomains(std::vector<subdomain_id_type> * subdomain_ids) const
+{
+  // find number of disconnected subdomains
+  std::vector<dof_id_type> representative_elem_ids;
+
+  // use subdomain_ids as markers for all elements to indicate if the elements
+  // have been visited. Note: here subdomain ID is unrelated with element
+  // subdomain_id().
+  std::vector<subdomain_id_type> subdomains;
+  if (!subdomain_ids)
+    subdomain_ids = &subdomains;
+  subdomain_ids->clear();
+  subdomain_ids->resize(max_elem_id() + 1, Elem::invalid_subdomain_id);
+
+  // counter of disconnected subdomains
+  subdomain_id_type subdomain_counter = 0;
+
+  // a stack for visiting elements, make its capacity sufficiently large to avoid
+  // memory allocation and deallocation when the vector size changes
+  std::vector<Elem *> list;
+  list.reserve(n_elem());
+
+  // counter of visited elements
+  dof_id_type visited = 0;
+  dof_id_type n_active = n_active_elem();
+  do
+  {
+    for (const auto & elem : active_element_ptr_range())
+      if ((*subdomain_ids)[elem->id()] == Elem::invalid_subdomain_id)
+      {
+        list.push_back(elem);
+        (*subdomain_ids)[elem->id()] = subdomain_counter;
+        break;
+      }
+    // we should be able to find a seed here
+    libmesh_assert(list.size() > 0);
+
+    dof_id_type min_id = std::numeric_limits<dof_id_type>::max();
+    while (list.size() > 0)
+    {
+      // pop up an element
+      Elem * elem = list.back(); list.pop_back(); ++visited;
+
+      min_id = std::min(elem->id(), min_id);
+
+      for (auto s : elem->side_index_range())
+      {
+        Elem * neighbor = elem->neighbor_ptr(s);
+        if (neighbor != nullptr && (*subdomain_ids)[neighbor->id()] == Elem::invalid_subdomain_id)
+        {
+          // neighbor must be active
+          libmesh_assert(neighbor->active());
+          list.push_back(neighbor);
+          (*subdomain_ids)[neighbor->id()] = subdomain_counter;
+        }
+      }
+    }
+
+    representative_elem_ids.push_back(min_id);
+    subdomain_counter++;
+  }
+  while (visited != n_active);
+
+  return representative_elem_ids;
+}
+
+std::unordered_map<dof_id_type, std::vector<std::vector<Point>>>
+ReplicatedMesh::get_boundary_points() const
+{
+  libmesh_error_msg_if(mesh_dimension() != 2,
+                       "Error: get_boundary_points only works for 2D now");
+
+  // find number of disconnected subdomains
+  // subdomains will hold the IDs of disconnected subdomains for all elements.
+  std::vector<subdomain_id_type> subdomains;
+  std::vector<dof_id_type> elem_ids = get_disconnected_subdomains(&subdomains);
+
+  std::unordered_map<dof_id_type, std::vector<std::vector<Point>>> boundary_points;
+
+  // get all boundary sides that are to be erased later during visiting
+  // use a comparison functor to avoid run-time randomness due to pointers
+  struct boundary_side_compare
+  {
+    bool operator()(const std::pair<const Elem *, unsigned int> & lhs,
+                    const std::pair<const Elem *, unsigned int> & rhs) const
+      {
+        if (lhs.first->id() < rhs.first->id())
+          return true;
+        else if (lhs.first->id() == rhs.first->id())
+        {
+          if (lhs.second < rhs.second)
+            return true;
+        }
+        return false;
+      }
+  };
+  std::set<std::pair<const Elem *, unsigned int>, boundary_side_compare> boundary_elements;
+  for (const auto & elem : active_element_ptr_range())
+    for (auto s : elem->side_index_range())
+      if (elem->neighbor_ptr(s) == nullptr)
+        boundary_elements.insert(std::pair<const Elem *, unsigned int>(elem, s));
+
+  while (!boundary_elements.empty())
+  {
+    // get the first entry as the seed
+    const Elem * eseed = boundary_elements.begin()->first;
+    unsigned int sseed = boundary_elements.begin()->second;
+
+    // get the subdomain ID that these boundary sides attached to
+    subdomain_id_type subdomain_id = subdomains[eseed->id()];
+
+    // start visiting the mesh to find all boundary nodes with the seed
+    std::vector<Point> bpoints;
+    const Elem * elem = eseed;
+    unsigned int s = sseed;
+    std::vector<unsigned int> local_side_nodes = elem->nodes_on_side(s);
+    while (true)
+    {
+      std::pair<const Elem *, unsigned int> side(elem, s);
+      libmesh_assert(boundary_elements.find(side) != boundary_elements.end());
+      boundary_elements.erase(side);
+
+      // push all nodes on the side except the node on the other end of the side (index 1)
+      for (auto i : index_range(local_side_nodes))
+        if (i != 1)
+          bpoints.push_back(*static_cast<const Point *>(elem->node_ptr(local_side_nodes[i])));
+
+      // use the last node to find next element and side
+      const Node * node = elem->node_ptr(local_side_nodes[1]);
+      std::set<const Elem *> neighbors;
+      elem->find_point_neighbors(*node, neighbors);
+
+      // if only one neighbor is found (itself), this node is a cornor node on boundary
+      if (neighbors.size() != 1)
+        neighbors.erase(elem);
+
+      // find the connecting side
+      bool found = false;
+      for (const auto & neighbor : neighbors)
+      {
+        for (auto ss : neighbor->side_index_range())
+          if (neighbor->neighbor_ptr(ss) == nullptr && !(elem == neighbor && s == ss))
+          {
+            local_side_nodes = neighbor->nodes_on_side(ss);
+            // we expect the starting point of the side to be the same as the end of the previous side
+            if (neighbor->node_ptr(local_side_nodes[0]) == node)
+            {
+              elem = neighbor;
+              s = ss;
+              found = true;
+              break;
+            }
+            else if (neighbor->node_ptr(local_side_nodes[1]) == node)
+            {
+              elem = neighbor;
+              s = ss;
+              found = true;
+              // flip nodes in local_side_nodes because the side is in an opposite direction
+              auto temp(local_side_nodes);
+              local_side_nodes[0] = temp[1];
+              local_side_nodes[1] = temp[0];
+              for (unsigned int i = 2; i < temp.size(); ++i)
+                local_side_nodes[temp.size() + 1 - i] = temp[i];
+              break;
+            }
+          }
+        if (found)
+          break;
+      }
+
+      libmesh_error_msg_if(!found, "ERROR: mesh topology error on visiting boundary sides");
+
+      // exit if we reach the starting point
+      if (elem == eseed && s == sseed)
+        break;
+    }
+    boundary_points[elem_ids[subdomain_id]].push_back(bpoints);
+  }
+
+  return boundary_points;
+}
 
 } // namespace libMesh

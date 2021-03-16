@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -72,7 +72,21 @@ public:
 
   virtual void solve() override = 0;
 
+  virtual std::pair<unsigned int, Real> adjoint_solve (const QoISet & qoi_indices) override = 0;
+
   virtual void advance_timestep() override;
+
+  virtual void adjoint_advance_timestep() override;
+
+  virtual void retrieve_timestep() override;
+
+  virtual void integrate_qoi_timestep() override = 0;
+
+  virtual void integrate_adjoint_sensitivity(const QoISet & qois, const ParameterVector & parameter_vector, SensitivityData & sensitivities) override = 0;
+
+  virtual void integrate_adjoint_refinement_error_estimate(AdjointRefinementEstimator & adjoint_refinement_error_estimator, ErrorVector & QoI_elementwise_error) override = 0;
+
+  virtual Real last_completed_timestep_size() override { return completed_timestep_size; };
 
   /**
    * This method is passed on to the core_time_solver
@@ -181,6 +195,14 @@ public:
   Real max_growth;
 
   /**
+   * The adaptive time solver's have two notions of deltat. The deltat the solver
+   * ended up using for the completed timestep. And the deltat the solver determined
+   * would be workable for the coming timestep. The latter gets set as system.deltat.
+   * We need a variable to save the deltat used for the completed timestep.
+   * */
+  Real completed_timestep_size;
+
+  /**
    * This flag, which is true by default, grows (shrinks) the timestep
    * based on the expected global accuracy of the timestepping scheme.
    * Global in this sense means the cumulative final-time accuracy of
@@ -198,13 +220,6 @@ public:
   bool global_tolerance;
 
 protected:
-
-  /**
-   * We need to store the value of the last deltat used, so
-   * that advance_timestep() will increment the system time
-   * correctly.
-   */
-  Real last_deltat;
 
   /**
    * A helper function to calculate error norms

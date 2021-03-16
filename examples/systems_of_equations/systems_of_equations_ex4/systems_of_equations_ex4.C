@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -88,6 +88,11 @@ int main (int argc, char ** argv)
   // Skip this 2D example if libMesh was compiled as 1D-only.
   libmesh_example_requires(dim <= LIBMESH_DIM, "2D support");
 
+  // We use Dirichlet boundary conditions here
+#ifndef LIBMESH_ENABLE_DIRICHLET
+  libmesh_example_requires(false, "--enable-dirichlet");
+#endif
+
   // Create a 2D mesh distributed across the default MPI communicator.
   Mesh mesh(init.comm(), dim);
   MeshTools::Generation::build_square (mesh,
@@ -108,11 +113,12 @@ int main (int argc, char ** argv)
   LinearImplicitSystem & system =
     equation_systems.add_system<LinearImplicitSystem> ("Elasticity");
 
+  system.attach_assemble_function (assemble_elasticity);
+
+#ifdef LIBMESH_ENABLE_DIRICHLET
   // Add two displacement variables, u and v, to the system
   unsigned int u_var = system.add_variable("u", SECOND, LAGRANGE);
   unsigned int v_var = system.add_variable("v", SECOND, LAGRANGE);
-
-  system.attach_assemble_function (assemble_elasticity);
 
   // Construct a Dirichlet boundary condition object
   // We impose a "clamped" boundary condition on the
@@ -135,6 +141,7 @@ int main (int argc, char ** argv)
   // We must add the Dirichlet boundary condition _before_
   // we call equation_systems.init()
   system.get_dof_map().add_dirichlet_boundary(dirichlet_bc);
+#endif // LIBMESH_ENABLE_DIRICHLET
 
   // Initialize the data structures for the equation system.
   equation_systems.init();
@@ -196,6 +203,8 @@ void assemble_elasticity(EquationSystems & es,
   std::vector<dof_id_type> dof_indices;
   std::vector<dof_id_type> dof_indices_u;
   std::vector<dof_id_type> dof_indices_v;
+
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
 
   for (const auto & elem : mesh.active_local_element_ptr_range())
     {
@@ -324,7 +333,7 @@ void assemble_elasticity(EquationSystems & es,
 
       dof_map.constrain_element_matrix_and_vector (Ke, Fe, dof_indices);
 
-      system.matrix->add_matrix (Ke, dof_indices);
+      matrix.add_matrix         (Ke, dof_indices);
       system.rhs->add_vector    (Fe, dof_indices);
     }
 }

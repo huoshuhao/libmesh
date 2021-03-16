@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -30,6 +30,9 @@
 // Local includes
 #include "libmesh/eigen_core_support.h"
 #include "libmesh/numeric_vector.h"
+
+// C++ includes
+#include <limits>
 
 namespace libMesh
 {
@@ -168,6 +171,8 @@ public:
 
   virtual NumericVector<T> & operator -= (const NumericVector<T> & v) override;
 
+  virtual NumericVector<T> & operator *= (const NumericVector<T> & v_in) override;
+
   virtual NumericVector<T> & operator /= (const NumericVector<T> & v_in) override;
 
   virtual void reciprocal() override;
@@ -223,6 +228,8 @@ public:
                                const NumericVector<T> & vec2) override;
 
   virtual void swap (NumericVector<T> & v) override;
+
+  virtual std::size_t max_allowed_id() const override;
 
   /**
    * References to the underlying Eigen data types.
@@ -309,8 +316,7 @@ void EigenSparseVector<T>::init (const numeric_index_type n,
 {
   // Eigen vectors only for serial cases,
   // but can provide a "parallel" vector on one processor.
-  if (n != n_local)
-    libmesh_error_msg("Error: EigenSparseVectors can only be used in serial!");
+  libmesh_error_msg_if(n != n_local, "Error: EigenSparseVectors can only be used in serial!");
 
   this->_type = SERIAL;
 
@@ -321,9 +327,7 @@ void EigenSparseVector<T>::init (const numeric_index_type n,
   _vec.resize(n);
 
   this->_is_initialized = true;
-#ifndef NDEBUG
   this->_is_closed = true;
-#endif
 
   // Optionally zero out all components
   if (fast == false)
@@ -375,9 +379,7 @@ void EigenSparseVector<T>::close ()
 {
   libmesh_assert (this->initialized());
 
-#ifndef NDEBUG
   this->_is_closed = true;
-#endif
 }
 
 
@@ -389,9 +391,7 @@ void EigenSparseVector<T>::clear ()
   _vec.resize(0);
 
   this->_is_initialized = false;
-#ifndef NDEBUG
   this->_is_closed = false;
-#endif
 }
 
 
@@ -483,9 +483,7 @@ void EigenSparseVector<T>::set (const numeric_index_type i, const T value)
 
   _vec[static_cast<eigen_idx_type>(i)] = value;
 
-#ifndef NDEBUG
   this->_is_closed = false;
-#endif
 }
 
 
@@ -499,9 +497,7 @@ void EigenSparseVector<T>::add (const numeric_index_type i, const T value)
 
   _vec[static_cast<eigen_idx_type>(i)] += value;
 
-#ifndef NDEBUG
   this->_is_closed = false;
-#endif
 }
 
 
@@ -532,6 +528,16 @@ void EigenSparseVector<T>::swap (NumericVector<T> & other)
   std::swap (this->_type,           v._type);
 }
 
+
+
+template <typename T>
+inline
+std::size_t EigenSparseVector<T>::max_allowed_id () const
+{
+  // We use the Eigen::Matrix type which appears to be templated on
+  // int for its sizes, see e.g. https://eigen.tuxfamily.org/dox/classEigen_1_1Matrix.html
+  return std::numeric_limits<int>::max();
+}
 
 } // namespace libMesh
 

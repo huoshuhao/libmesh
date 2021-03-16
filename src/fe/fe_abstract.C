@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -15,14 +15,10 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-
-
-// Local includes
+// libmesh includes
 #include "libmesh/fe.h"
 #include "libmesh/libmesh_logging.h"
 #include "libmesh/enum_elem_type.h"
-
-// For projection code:
 #include "libmesh/boundary_info.h"
 #include "libmesh/mesh_base.h"
 #include "libmesh/dense_matrix.h"
@@ -39,6 +35,7 @@
 #include "libmesh/tensor_value.h"
 #include "libmesh/threads.h"
 #include "libmesh/enum_elem_type.h"
+#include "libmesh/enum_to_string.h"
 
 namespace libMesh
 {
@@ -48,6 +45,9 @@ FEAbstract::FEAbstract(const unsigned int d,
   _fe_map( FEMap::build(fet) ),
   dim(d),
   calculations_started(false),
+  calculate_dual(false),
+  calculate_nothing(false),
+  calculate_map(false),
   calculate_phi(false),
   calculate_dphi(false),
   calculate_d2phi(false),
@@ -102,12 +102,18 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
           case MONOMIAL:
             return libmesh_make_unique<FE<0,MONOMIAL>>(fet);
 
+          case MONOMIAL_VEC:
+            return libmesh_make_unique<FE<0,MONOMIAL_VEC>>(fet);
+
 #ifdef LIBMESH_ENABLE_HIGHER_ORDER_SHAPES
           case SZABAB:
             return libmesh_make_unique<FE<0,SZABAB>>(fet);
 
           case BERNSTEIN:
             return libmesh_make_unique<FE<0,BERNSTEIN>>(fet);
+
+          case RATIONAL_BERNSTEIN:
+            return libmesh_make_unique<FE<0,RATIONAL_BERNSTEIN>>(fet);
 #endif
 
           case XYZ:
@@ -117,7 +123,7 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
             return libmesh_make_unique<FEScalar<0>>(fet);
 
           default:
-            libmesh_error_msg("ERROR: Bad FEType.family= " << fet.family);
+            libmesh_error_msg("ERROR: Bad FEType.family= " << Utility::enum_to_string(fet.family));
           }
       }
       // 1D
@@ -149,12 +155,18 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
           case MONOMIAL:
             return libmesh_make_unique<FE<1,MONOMIAL>>(fet);
 
+          case MONOMIAL_VEC:
+            return libmesh_make_unique<FE<1,MONOMIAL_VEC>>(fet);
+
 #ifdef LIBMESH_ENABLE_HIGHER_ORDER_SHAPES
           case SZABAB:
             return libmesh_make_unique<FE<1,SZABAB>>(fet);
 
           case BERNSTEIN:
             return libmesh_make_unique<FE<1,BERNSTEIN>>(fet);
+
+          case RATIONAL_BERNSTEIN:
+            return libmesh_make_unique<FE<1,RATIONAL_BERNSTEIN>>(fet);
 #endif
 
           case XYZ:
@@ -164,7 +176,7 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
             return libmesh_make_unique<FEScalar<1>>(fet);
 
           default:
-            libmesh_error_msg("ERROR: Bad FEType.family= " << fet.family);
+            libmesh_error_msg("ERROR: Bad FEType.family= " << Utility::enum_to_string(fet.family));
           }
       }
 
@@ -198,12 +210,18 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
           case MONOMIAL:
             return libmesh_make_unique<FE<2,MONOMIAL>>(fet);
 
+          case MONOMIAL_VEC:
+            return libmesh_make_unique<FE<2,MONOMIAL_VEC>>(fet);
+
 #ifdef LIBMESH_ENABLE_HIGHER_ORDER_SHAPES
           case SZABAB:
             return libmesh_make_unique<FE<2,SZABAB>>(fet);
 
           case BERNSTEIN:
             return libmesh_make_unique<FE<2,BERNSTEIN>>(fet);
+
+          case RATIONAL_BERNSTEIN:
+            return libmesh_make_unique<FE<2,RATIONAL_BERNSTEIN>>(fet);
 #endif
 
           case XYZ:
@@ -219,7 +237,7 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
             return libmesh_make_unique<FESubdivision>(fet);
 
           default:
-            libmesh_error_msg("ERROR: Bad FEType.family= " << fet.family);
+            libmesh_error_msg("ERROR: Bad FEType.family= " << Utility::enum_to_string(fet.family));
           }
       }
 
@@ -253,12 +271,18 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
           case MONOMIAL:
             return libmesh_make_unique<FE<3,MONOMIAL>>(fet);
 
+          case MONOMIAL_VEC:
+            return libmesh_make_unique<FE<3,MONOMIAL_VEC>>(fet);
+
 #ifdef LIBMESH_ENABLE_HIGHER_ORDER_SHAPES
           case SZABAB:
             return libmesh_make_unique<FE<3,SZABAB>>(fet);
 
           case BERNSTEIN:
             return libmesh_make_unique<FE<3,BERNSTEIN>>(fet);
+
+          case RATIONAL_BERNSTEIN:
+            return libmesh_make_unique<FE<3,RATIONAL_BERNSTEIN>>(fet);
 #endif
 
           case XYZ:
@@ -271,7 +295,7 @@ std::unique_ptr<FEAbstract> FEAbstract::build(const unsigned int dim,
             return libmesh_make_unique<FENedelecOne<3>>(fet);
 
           default:
-            libmesh_error_msg("ERROR: Bad FEType.family= " << fet.family);
+            libmesh_error_msg("ERROR: Bad FEType.family= " << Utility::enum_to_string(fet.family));
           }
       }
 
@@ -284,6 +308,12 @@ void FEAbstract::get_refspace_nodes(const ElemType itemType, std::vector<Point> 
 {
   switch(itemType)
     {
+    case NODEELEM:
+      {
+        nodes.resize(1);
+        nodes[0] = Point (0.,0.,0.);
+        return;
+      }
     case EDGE2:
       {
         nodes.resize(2);
@@ -297,6 +327,15 @@ void FEAbstract::get_refspace_nodes(const ElemType itemType, std::vector<Point> 
         nodes[0] = Point (-1.,0.,0.);
         nodes[1] = Point (1.,0.,0.);
         nodes[2] = Point (0.,0.,0.);
+        return;
+      }
+    case EDGE4:
+      {
+        nodes.resize(4);
+        nodes[0] = Point (-1.,0.,0.);
+        nodes[1] = Point (1.,0.,0.);
+        nodes[2] = Point (-1./3.,0.,0.);
+        nodes[3] - Point (1./3.,0.,0.);
         return;
       }
     case TRI3:
@@ -574,7 +613,7 @@ void FEAbstract::get_refspace_nodes(const ElemType itemType, std::vector<Point> 
       }
 
     default:
-      libmesh_error_msg("ERROR: Unknown element type " << itemType);
+      libmesh_error_msg("ERROR: Unknown element type " << Utility::enum_to_string(itemType));
     }
 }
 
@@ -766,7 +805,7 @@ bool FEAbstract::on_reference_element(const Point & p, const ElemType t, const R
 #endif
 
     default:
-      libmesh_error_msg("ERROR: Unknown element type " << t);
+      libmesh_error_msg("ERROR: Unknown element type " << Utility::enum_to_string(t));
     }
 
   // If we get here then the point is _not_ in the
@@ -832,8 +871,8 @@ void FEAbstract::compute_node_constraints (NodeConstraints & constraints,
   if (elem->subactive())
     return;
 
-  // We currently always use LAGRANGE mappings for geometry
-  const FEType fe_type(elem->default_order(), LAGRANGE);
+  const FEFamily mapping_family = FEMap::map_fe_type(*elem);
+  const FEType fe_type(elem->default_order(), mapping_family);
 
   // Pull objects out of the loop to reduce heap operations
   std::vector<const Node *> my_nodes, parent_nodes;
@@ -875,7 +914,8 @@ void FEAbstract::compute_node_constraints (NodeConstraints & constraints,
                my_side_n < n_side_nodes;
                my_side_n++)
             {
-              libmesh_assert_less (my_side_n, FEInterface::n_dofs(Dim-1, fe_type, my_side->type()));
+              // Do not use the p_level(), if any, that is inherited by the side.
+              libmesh_assert_less (my_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, my_side.get()));
 
               const Node * my_node = my_nodes[my_side_n];
 
@@ -883,23 +923,25 @@ void FEAbstract::compute_node_constraints (NodeConstraints & constraints,
               const Point & support_point = *my_node;
 
               // Figure out where my node lies on their reference element.
-              const Point mapped_point = FEInterface::inverse_map(Dim-1, fe_type,
-                                                                  parent_side.get(),
-                                                                  support_point);
+              const Point mapped_point = FEMap::inverse_map(Dim-1,
+                                                            parent_side.get(),
+                                                            support_point);
 
               // Compute the parent's side shape function values.
               for (unsigned int their_side_n=0;
                    their_side_n < n_side_nodes;
                    their_side_n++)
                 {
-                  libmesh_assert_less (their_side_n, FEInterface::n_dofs(Dim-1, fe_type, parent_side->type()));
+                  // Do not use the p_level(), if any, that is inherited by the side.
+                  libmesh_assert_less (their_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, parent_side.get()));
 
                   const Node * their_node = parent_nodes[their_side_n];
                   libmesh_assert(their_node);
 
-                  const Real their_value = FEInterface::shape(Dim-1,
-                                                              fe_type,
-                                                              parent_side->type(),
+                  // Do not use the p_level(), if any, that is inherited by the side.
+                  const Real their_value = FEInterface::shape(fe_type,
+                                                              /*extra_order=*/0,
+                                                              parent_side.get(),
                                                               their_side_n,
                                                               mapped_point);
 
@@ -929,8 +971,7 @@ void FEAbstract::compute_node_constraints (NodeConstraints & constraints,
                         // A reference to the constraint row.
                         NodeConstraintRow & constraint_row = constraints[my_node].first;
 
-                        constraint_row.insert(std::make_pair (their_node,
-                                                              0.));
+                        constraint_row.emplace(their_node, 0.);
                       }
                   // To get nodal coordinate constraints right, only
                   // add non-zero and non-identity values for Lagrange
@@ -945,8 +986,7 @@ void FEAbstract::compute_node_constraints (NodeConstraints & constraints,
                         // A reference to the constraint row.
                         NodeConstraintRow & constraint_row = constraints[my_node].first;
 
-                        constraint_row.insert(std::make_pair (their_node,
-                                                              their_value));
+                        constraint_row.emplace(their_node, their_value);
                       }
                 }
             }
@@ -980,8 +1020,8 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
 
   const unsigned int Dim = elem->dim();
 
-  // We currently always use LAGRANGE mappings for geometry
-  const FEType fe_type(elem->default_order(), LAGRANGE);
+  const FEFamily mapping_family = FEMap::map_fe_type(*elem);
+  const FEType fe_type(elem->default_order(), mapping_family);
 
   // Pull objects out of the loop to reduce heap operations
   std::vector<const Node *> my_nodes, neigh_nodes;
@@ -1004,7 +1044,12 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
               libmesh_assert(point_locator);
 
               // Get pointers to the element's neighbor.
-              const Elem * neigh = boundaries.neighbor(boundary_id, *point_locator, elem, s);
+              unsigned int s_neigh;
+              const Elem * neigh = boundaries.neighbor(boundary_id, *point_locator, elem, s, &s_neigh);
+
+              libmesh_error_msg_if
+                (!neigh, "PeriodicBoundaries can't find a periodic neighbor for element " <<
+                         elem->id() << " side " << s);
 
               // h refinement constraints:
               // constrain dofs shared between
@@ -1012,10 +1057,6 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
               // as or coarser than this element.
               if (neigh->level() <= elem->level())
                 {
-                  unsigned int s_neigh =
-                    mesh.get_boundary_info().side_with_boundary_id(neigh, periodic->pairedboundary);
-                  libmesh_assert_not_equal_to (s_neigh, libMesh::invalid_uint);
-
 #ifdef LIBMESH_ENABLE_AMR
                   libmesh_assert(neigh->active());
 #endif // #ifdef LIBMESH_ENABLE_AMR
@@ -1046,16 +1087,17 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                        my_side_n < n_side_nodes;
                        my_side_n++)
                     {
-                      libmesh_assert_less (my_side_n, FEInterface::n_dofs(Dim-1, fe_type, my_side->type()));
+                      // Do not use the p_level(), if any, that is inherited by the side.
+                      libmesh_assert_less (my_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, my_side.get()));
 
                       const Node * my_node = my_nodes[my_side_n];
 
                       // Figure out where my node lies on their reference element.
                       const Point neigh_point = periodic->get_corresponding_pos(*my_node);
 
-                      const Point mapped_point = FEInterface::inverse_map(Dim-1, fe_type,
-                                                                          neigh_side.get(),
-                                                                          neigh_point);
+                      const Point mapped_point =
+                        FEMap::inverse_map(Dim-1, neigh_side.get(),
+                                           neigh_point);
 
                       // If we've already got a constraint on this
                       // node, then the periodic constraint is
@@ -1075,7 +1117,8 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                            their_side_n < n_side_nodes;
                            their_side_n++)
                         {
-                          libmesh_assert_less (their_side_n, FEInterface::n_dofs(Dim-1, fe_type, neigh_side->type()));
+                          // Do not use the p_level(), if any, that is inherited by the side.
+                          libmesh_assert_less (their_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, neigh_side.get()));
 
                           const Node * their_node = neigh_nodes[their_side_n];
 
@@ -1096,7 +1139,8 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                                  orig_side_n < n_side_nodes;
                                  orig_side_n++)
                               {
-                                libmesh_assert_less (orig_side_n, FEInterface::n_dofs(Dim-1, fe_type, my_side->type()));
+                                // Do not use the p_level(), if any, that is inherited by the side.
+                                libmesh_assert_less (orig_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, my_side.get()));
 
                                 const Node * orig_node = my_nodes[orig_side_n];
 
@@ -1110,7 +1154,8 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                        my_side_n < n_side_nodes;
                        my_side_n++)
                     {
-                      libmesh_assert_less (my_side_n, FEInterface::n_dofs(Dim-1, fe_type, my_side->type()));
+                      // Do not use the p_level(), if any, that is inherited by the side.
+                      libmesh_assert_less (my_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, my_side.get()));
 
                       if (skip_constraint[my_side_n])
                         continue;
@@ -1121,22 +1166,24 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                       const Point neigh_point = periodic->get_corresponding_pos(*my_node);
 
                       // Figure out where my node lies on their reference element.
-                      const Point mapped_point = FEInterface::inverse_map(Dim-1, fe_type,
-                                                                          neigh_side.get(),
-                                                                          neigh_point);
+                      const Point mapped_point =
+                        FEMap::inverse_map(Dim-1, neigh_side.get(),
+                                           neigh_point);
 
                       for (unsigned int their_side_n=0;
                            their_side_n < n_side_nodes;
                            their_side_n++)
                         {
-                          libmesh_assert_less (their_side_n, FEInterface::n_dofs(Dim-1, fe_type, neigh_side->type()));
+                          // Do not use the p_level(), if any, that is inherited by the side.
+                          libmesh_assert_less (their_side_n, FEInterface::n_dofs(fe_type, /*extra_order=*/0, neigh_side.get()));
 
                           const Node * their_node = neigh_nodes[their_side_n];
                           libmesh_assert(their_node);
 
-                          const Real their_value = FEInterface::shape(Dim-1,
-                                                                      fe_type,
-                                                                      neigh_side->type(),
+                          // Do not use the p_level(), if any, that is inherited by the side.
+                          const Real their_value = FEInterface::shape(fe_type,
+                                                                      /*extra_order=*/0,
+                                                                      neigh_side.get(),
                                                                       their_side_n,
                                                                       mapped_point);
 
@@ -1149,8 +1196,7 @@ void FEAbstract::compute_periodic_node_constraints (NodeConstraints & constraint
                             NodeConstraintRow & constraint_row =
                               constraints[my_node].first;
 
-                            constraint_row.insert(std::make_pair(their_node,
-                                                                 their_value));
+                            constraint_row.emplace(their_node, their_value);
                           }
                         }
                     }

@@ -68,6 +68,16 @@ public:
   void clear();
 
   /**
+   * Get a const reference to the map that stores all of the values.
+   */
+  const std::map<std::string, Real> & get_parameters_map() const;
+
+  /**
+   * Get a const reference to the map that stores all of the "extra" values.
+   */
+  const std::map<std::string, Real> & get_extra_parameters_map() const;
+
+  /**
    * Get the value of the specific parameter.
    */
   Real get_value(const std::string & param_name) const;
@@ -96,23 +106,47 @@ public:
 
   /**
    * Fill \p param_names with the names of the parameters.
+   *
+   * \deprecated to avoid making it too easy to create copies that in
+   * most circumstances aren't needed.  If this functionality really
+   * is required, call get_parameters_map() and loop over the keys
+   * directly.
    */
   void get_parameter_names(std::set<std::string> & param_names) const;
 
   /**
    * Fill \p param_names with the names of the extra parameters.
+   *
+   * \deprecated to avoid making it too easy to create copies that in
+   * most circumstances aren't needed.  If this functionality really
+   * is required, call get_parameters_map() and loop over the keys
+   * directly.
    */
   void get_extra_parameter_names(std::set<std::string> & param_names) const;
 
   /**
-   * Get a constant iterator to beginning of this RBParameters object.
+   * Erase \p param_name  from _parameters. If \p param_name is not present
+   * in _parameters, then do nothing.
    */
-  const_iterator begin() const;
+  void erase_parameter(const std::string & param_name);
 
   /**
-   * Get a constant iterator to the end of this RBParameters object.
+   * Erase \p param_name  from _extra_parameters. If \p param_name is not present
+   * in _extra_parameters, then do nothing.
    */
+  void erase_extra_parameter(const std::string & param_name);
+
+  /**
+   * Get const_iterator access to the parameters stored in this RBParameters object.
+   */
+  const_iterator begin() const;
   const_iterator end() const;
+
+  /**
+   * Get const_iterator access to the extra parameters stored in this RBParameters object.
+   */
+  const_iterator extra_begin() const;
+  const_iterator extra_end() const;
 
   /**
    * Two RBParameters are equal if they have the same _parameters map.

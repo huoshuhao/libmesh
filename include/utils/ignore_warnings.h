@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -33,6 +33,7 @@
 #pragma clang diagnostic ignored "-Wunused-private-field"
 #pragma clang diagnostic ignored "-Wextra"
 #pragma clang diagnostic ignored "-Wredundant-decls"
+#pragma clang diagnostic ignored "-Wcast-align"
 #pragma clang diagnostic ignored "-Wcast-qual"
 #pragma clang diagnostic ignored "-Wswitch-default"
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -45,6 +46,13 @@
 // This was introduced in 3.6
 #pragma clang diagnostic ignored "-Winconsistent-missing-override"
 #endif // clang > 3.5
+// These were introduced in clang 10
+#if (__clang_major__ > 9)
+// Ignore warnings from code that does "if (foo) bar();"
+#pragma clang diagnostic ignored "-Wmisleading-indentation"
+#pragma clang diagnostic ignored "-Wint-in-bool-context"
+#pragma clang diagnostic ignored "-Wdeprecated-copy"
+#endif // clang > 9
 #endif
 
 #if defined(__GNUC__) && !defined(__INTEL_COMPILER) && !defined(__clang__)
@@ -66,8 +74,9 @@
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic ignored "-Wswitch-default"
-// And this for Eigen
+// And these are for Eigen
 #pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wstack-protector"
 // And this for VTK
 #pragma GCC diagnostic ignored "-Wlogical-op"
 // Ignore warnings from code that uses deprecated members of std, like std::auto_ptr.
@@ -82,6 +91,13 @@
 #if (__GNUC__ > 6)
 #pragma GCC diagnostic ignored "-Wint-in-bool-context"
 #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#if (__GNUC__ > 7)
+#pragma GCC diagnostic ignored "-Wparentheses"
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#if (__GNUC__ > 8)
+#pragma GCC diagnostic ignored "-Wdeprecated-copy"
+#endif // GCC > 8
+#endif // GCC > 7
 #endif // GCC > 6
 #endif // GCC > 5
 #endif // GCC > 4.5

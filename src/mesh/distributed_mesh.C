@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -18,14 +18,19 @@
 
 
 // Local includes
-#include "libmesh/boundary_info.h"
 #include "libmesh/distributed_mesh.h"
+
+// libMesh includes
+#include "libmesh/boundary_info.h"
 #include "libmesh/elem.h"
 #include "libmesh/libmesh_logging.h"
 #include "libmesh/mesh_communication.h"
-#include "libmesh/parallel.h"
-#include "libmesh/parallel_sync.h"
 #include "libmesh/parmetis_partitioner.h"
+
+// TIMPI includes
+#include "timpi/parallel_implementation.h"
+#include "timpi/parallel_sync.h"
+
 
 namespace libMesh
 {
@@ -160,7 +165,10 @@ DistributedMesh::DistributedMesh (const UnstructuredMesh & other_mesh) :
       other_boundary_info.get_nodeset_name(node_bnd_id);
 
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
-  _next_unique_id = other_mesh.parallel_max_unique_id();
+  _next_unique_id = other_mesh.parallel_max_unique_id() +
+                    this->processor_id();
+  _next_unpartitioned_unique_id = _next_unique_id +
+    (this->n_processors() - this->processor_id());
 #endif
   this->update_parallel_id_counts();
 }
@@ -265,6 +273,19 @@ unique_id_type DistributedMesh::parallel_max_unique_id() const
                                       _next_unpartitioned_unique_id);
   this->comm().max(max_local);
   return max_local;
+}
+
+
+
+void DistributedMesh::set_next_unique_id(unique_id_type id)
+{
+  _next_unique_id = id;
+  _next_unpartitioned_unique_id =
+    ((_next_unique_id-1) / (this->n_processors() + 1) + 1) *
+    (this->n_processors() + 1) + this->n_processors();
+  _next_unique_id =
+    ((_next_unique_id + this->n_processors() - 1) / (this->n_processors() + 1) + 1) *
+    (this->n_processors() + 1) + this->processor_id();
 }
 #endif
 
@@ -495,14 +516,21 @@ Elem * DistributedMesh::add_elem (Elem * e)
     {
       if (processor_id() == e->processor_id())
         {
-          e->set_unique_id() = _next_unique_id;
+          e->set_unique_id(_next_unique_id);
           _next_unique_id += this->n_processors() + 1;
         }
       else
         {
-          e->set_unique_id() = _next_unpartitioned_unique_id;
+          e->set_unique_id(_next_unpartitioned_unique_id);
           _next_unpartitioned_unique_id += this->n_processors() + 1;
         }
+    }
+  else
+    {
+      _next_unique_id = std::max(_next_unique_id, e->unique_id()+1);
+      _next_unique_id =
+        ((_next_unique_id + this->n_processors() - 1) / (this->n_processors() + 1) + 1) *
+        (this->n_processors() + 1) + this->processor_id();
     }
 #endif
 
@@ -519,7 +547,26 @@ Elem * DistributedMesh::add_elem (Elem * e)
   //     }
   // #endif
 
+  // Make sure any new element is given space for any extra integers
+  // we've requested
+  e->add_extra_integers(_elem_integer_names.size(),
+                        _elem_integer_default_values);
+
+  // And set mapping type and data on any new element
+  e->set_mapping_type(this->default_mapping_type());
+  e->set_mapping_data(this->default_mapping_data());
+
   return e;
+}
+
+
+
+Elem * DistributedMesh::add_elem (std::unique_ptr<Elem> e)
+{
+  // The mesh now takes ownership of the Elem. Eventually the guts of
+  // add_elem() will get moved to a private helper function, and
+  // calling add_elem() directly will be deprecated.
+  return add_elem(e.release());
 }
 
 
@@ -534,14 +581,21 @@ Elem * DistributedMesh::insert_elem (Elem * e)
     {
       if (processor_id() == e->processor_id())
         {
-          e->set_unique_id() = _next_unique_id;
+          e->set_unique_id(_next_unique_id);
           _next_unique_id += this->n_processors() + 1;
         }
       else
         {
-          e->set_unique_id() = _next_unpartitioned_unique_id;
+          e->set_unique_id(_next_unpartitioned_unique_id);
           _next_unpartitioned_unique_id += this->n_processors() + 1;
         }
+    }
+  else
+    {
+      _next_unique_id = std::max(_next_unique_id, e->unique_id()+1);
+      _next_unique_id =
+        ((_next_unique_id + this->n_processors() - 1) / (this->n_processors() + 1) + 1) *
+        (this->n_processors() + 1) + this->processor_id();
     }
 #endif
 
@@ -553,9 +607,25 @@ Elem * DistributedMesh::insert_elem (Elem * e)
 
   _elements[e->id()] = e;
 
+  // Make sure any new element is given space for any extra integers
+  // we've requested
+  e->add_extra_integers(_elem_integer_names.size(),
+                        _elem_integer_default_values);
+
+  // And set mapping type and data on any new element
+  e->set_mapping_type(this->default_mapping_type());
+  e->set_mapping_data(this->default_mapping_data());
+
   return e;
 }
 
+Elem * DistributedMesh::insert_elem (std::unique_ptr<Elem> e)
+{
+  // The mesh now takes ownership of the Elem. Eventually the guts of
+  // insert_elem(Elem*) will get moved to a private helper function, and
+  // calling insert_elem(Elem*) directly will be deprecated.
+  return insert_elem(e.release());
+}
 
 
 void DistributedMesh::delete_elem(Elem * e)
@@ -706,17 +776,26 @@ Node * DistributedMesh::add_node (Node * n)
     {
       if (processor_id() == n->processor_id())
         {
-          n->set_unique_id() = _next_unique_id;
-          _next_unique_id += this->n_processors();
+          n->set_unique_id(_next_unique_id);
+          _next_unique_id += this->n_processors() + 1;
         }
       else
         {
-          n->set_unique_id() = _next_unpartitioned_unique_id;
+          n->set_unique_id(_next_unpartitioned_unique_id);
           _next_unpartitioned_unique_id += this->n_processors() + 1;
         }
     }
+  else
+    {
+      _next_unique_id = std::max(_next_unique_id, n->unique_id()+1);
+      _next_unique_id =
+        ((_next_unique_id + this->n_processors() - 1) / (this->n_processors() + 1) + 1) *
+        (this->n_processors() + 1) + this->processor_id();
+    }
 #endif
 
+  n->add_extra_integers(_node_integer_names.size(),
+                        _node_integer_default_values);
 
   // Unpartitioned nodes should be added on every processor
   // And shouldn't be added in the same batch as ghost nodes
@@ -734,11 +813,23 @@ Node * DistributedMesh::add_node (Node * n)
   return n;
 }
 
+Node * DistributedMesh::add_node (std::unique_ptr<Node> n)
+{
+  // The mesh now takes ownership of the Node. Eventually the guts of
+  // add_node() will get moved to a private helper function, and
+  // calling add_node() directly will be deprecated.
+  return add_node(n.release());
+}
 
 
 Node * DistributedMesh::insert_node(Node * n)
 {
   return DistributedMesh::add_node(n);
+}
+
+Node * DistributedMesh::insert_node(std::unique_ptr<Node> n)
+{
+  return insert_node(n.release());
 }
 
 
@@ -756,6 +847,7 @@ void DistributedMesh::delete_node(Node * n)
 
   // Delete the node from the BoundaryInfo object
   this->get_boundary_info().remove(n);
+  _constraint_rows.erase(n);
 
   // But not yet from the container; we might invalidate
   // an iterator that way!
@@ -1044,8 +1136,8 @@ DistributedMesh::renumber_dof_objects(mapvector<T *, dof_id_type> & objects)
   std::vector<dof_id_type> objects_on_proc(this->n_processors(), 0);
   auto this_it = ghost_objects_from_proc.find(this->processor_id());
   this->comm().allgather
-    ((this_it == ghost_objects_from_proc.end()) ? 0 : this_it->second,
-     objects_on_proc);
+    ((this_it == ghost_objects_from_proc.end()) ?
+     dof_id_type(0) : this_it->second, objects_on_proc);
 
 #ifndef NDEBUG
   libmesh_assert(this->comm().verify(unpartitioned_objects));
@@ -1058,7 +1150,7 @@ DistributedMesh::renumber_dof_objects(mapvector<T *, dof_id_type> & objects)
 
   // We'll renumber objects in blocks by processor id
   std::vector<dof_id_type> first_object_on_proc(this->n_processors());
-  for (processor_id_type i=1; i != this->n_processors(); ++i)
+  for (processor_id_type i=1, np=this->n_processors(); i != np; ++i)
     first_object_on_proc[i] = first_object_on_proc[i-1] +
       objects_on_proc[i-1];
   dof_id_type next_id = first_object_on_proc[this->processor_id()];
@@ -1077,7 +1169,7 @@ DistributedMesh::renumber_dof_objects(mapvector<T *, dof_id_type> & objects)
   // We know how many objects live on each processor, so reserve() space for
   // each.
   auto ghost_end = ghost_objects_from_proc.end();
-  for (processor_id_type p=0; p != this->n_processors(); ++p)
+  for (auto p : make_range(this->n_processors()))
     if (p != this->processor_id())
       {
         const auto p_it = ghost_objects_from_proc.find(p);
@@ -1190,7 +1282,7 @@ DistributedMesh::renumber_dof_objects(mapvector<T *, dof_id_type> & objects)
           libmesh_assert (obj);
           libmesh_assert_equal_to (obj->processor_id(), pid);
           if (!obj->valid_unique_id() && data[i] != DofObject::invalid_unique_id)
-            obj->set_unique_id() = (data[i]);
+            obj->set_unique_id(data[i]);
         }
     };
 
@@ -1202,7 +1294,7 @@ DistributedMesh::renumber_dof_objects(mapvector<T *, dof_id_type> & objects)
 
   // Next set unpartitioned object ids
   next_id = 0;
-  for (processor_id_type i=0; i != this->n_processors(); ++i)
+  for (auto i : make_range(this->n_processors()))
     next_id += objects_on_proc[i];
   for (it = objects.begin(); it != end; ++it)
     {
@@ -1271,8 +1363,8 @@ void DistributedMesh::renumber_nodes_and_elements ()
 
   // flag the nodes we need
   for (auto & elem : this->element_ptr_range())
-    for (unsigned int n=0; n != elem->n_nodes(); ++n)
-      used_nodes.insert(elem->node_id(n));
+    for (const Node & node : elem->node_ref_range())
+      used_nodes.insert(node.id());
 
   // Nodes not connected to any local elements, and nullptr node entries
   // in our container, are deleted
@@ -1290,6 +1382,7 @@ void DistributedMesh::renumber_nodes_and_elements ()
             // remove any boundary information associated with
             // this node
             this->get_boundary_info().remove (nd);
+            _constraint_rows.erase(nd);
 
             // delete the node
             delete nd;
@@ -1460,6 +1553,15 @@ void DistributedMesh::add_extra_ghost_elem(Elem * e)
   _extra_ghost_elems.insert(e);
 }
 
+void
+DistributedMesh::clear_extra_ghost_elems(const std::set<Elem *> & extra_ghost_elems)
+{
+  std::set<Elem *> tmp;
+  std::set_difference(_extra_ghost_elems.begin(), _extra_ghost_elems.end(),
+                      extra_ghost_elems.begin(), extra_ghost_elems.end(),
+                      std::inserter(tmp, tmp.begin()));
+  _extra_ghost_elems = tmp;
+}
 
 void DistributedMesh::allgather()
 {

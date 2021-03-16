@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -64,10 +64,13 @@
 #include "libmesh/periodic_boundaries.h"
 #include "libmesh/periodic_boundary.h"
 #include "libmesh/enum_solver_package.h"
+#include "libmesh/tensor_value.h"
+#include "libmesh/vector_value.h"
 
 // Bring in everything from the libMesh namespace
 using namespace libMesh;
 
+#ifdef LIBMESH_ENABLE_PERIODIC
 // Here we define the azimuthal periodic boundary condition class.
 // This class assumes that (u,v,w) are variables 0, 1, and 2 in
 // the System, but this could be made more general if needed.
@@ -90,7 +93,7 @@ public:
     set_variable(0);
     set_variable(1);
     set_variable(2);
-    set_transformation_matrix(get_rotation_matrix());
+    set_up_rotation_matrix();
   }
 
   /**
@@ -112,39 +115,43 @@ public:
     set_variable(0);
     set_variable(1);
     set_variable(2);
-    set_transformation_matrix(get_rotation_matrix());
+    set_up_rotation_matrix();
   }
 
   /**
    * Destructor
    */
-  virtual ~AzimuthalPeriodicBoundary() {}
+  virtual ~AzimuthalPeriodicBoundary() = default;
 
   /**
-   * Get the rotation matrix for this transformation.
+   * Computes and stores the rotation matrix for this transformation,
+   * and then calls the base class API to store it. This should only
+   * be done once, since the direction and angle do not change once
+   * the class is constructed.
    */
-  DenseMatrix<Real> get_rotation_matrix() const
+  void set_up_rotation_matrix()
   {
     // Formula for rotation matrix about an axis is given on wikipedia:
     // en.wikipedia.org/wiki/Rotation_matrix
     // We rotate by angle theta about the axis defined by u, which is a
     // unit vector in the direction of _axis.
+    // Note: this example already requires LIBMESH_DIM==3 so we don't
+    // explicitly check for that here.
     Point u = _axis.unit();
     Real u_x = u(0);
     Real u_y = u(1);
     Real u_z = u(2);
-    DenseMatrix<Real> R(3,3);
-    R(0,0) = cos(_theta) + u_x*u_x*(1.0 - cos(_theta));
-    R(0,1) = u_x*u_y*(1.0 - cos(_theta)) - u_z*sin(_theta);
-    R(0,2) = u_x*u_z*(1.0 - cos(_theta)) + u_y*sin(_theta);
-    R(1,0) = u_y*u_x*(1.0 - cos(_theta)) + u_z*sin(_theta);
-    R(1,1) = cos(_theta) + u_y*u_y*(1.0 - cos(_theta));
-    R(1,2) = u_y*u_z*(1.0 - cos(_theta)) - u_x*sin(_theta);
-    R(2,0) = u_z*u_x*(1.0 - cos(_theta)) - u_y*sin(_theta);
-    R(2,1) = u_z*u_y*(1.0 - cos(_theta)) + u_x*sin(_theta);
-    R(2,2) = cos(_theta) + u_z*u_z*(1.0 - cos(_theta));
+    Real cost = std::cos(_theta);
+    Real sint = std::sin(_theta);
+    _R = RealTensorValue
+      (cost + u_x*u_x*(1.0 - cost),     u_x*u_y*(1.0 - cost) - u_z*sint, u_x*u_z*(1.0 - cost) + u_y*sint,
+       u_y*u_x*(1.0 - cost) + u_z*sint, cost + u_y*u_y*(1.0 - cost),     u_y*u_z*(1.0 - cost) - u_x*sint,
+       u_z*u_x*(1.0 - cost) - u_y*sint, u_z*u_y*(1.0 - cost) + u_x*sint, cost + u_z*u_z*(1.0 - cost));
 
-    return R;
+    // For generality, PeriodicBoundaryBase::set_transformation_matrix() takes an
+    // (n_vars * n_vars) DenseMatrix which we construct on the fly.
+    this->set_transformation_matrix
+      (DenseMatrix<Real> (3, 3, {_R(0,0), _R(0,1), _R(0,2), _R(1,0), _R(1,1), _R(1,2), _R(2,0), _R(2,1), _R(2,2)}));
   }
 
   /**
@@ -154,24 +161,10 @@ public:
    */
   virtual Point get_corresponding_pos(const Point & pt) const override
   {
-    DenseVector<Real> translated_pt(3);
-    for(unsigned int i=0; i<3; i++)
-    {
-      translated_pt(i) = pt(i) - _center(i);
-    }
-
     // Note that since _theta defines the angle from "paired boundary" to
-    // "my boundary", and we want the inverse of that here, we must use
-    // vector_mult_transpose below.
-    DenseVector<Real> rotated_pt;
-    get_transformation_matrix().vector_mult_transpose(rotated_pt, translated_pt);
-
-    Point corresponding_pos;
-    for(unsigned int i=0; i<3; i++)
-    {
-      corresponding_pos(i) = rotated_pt(i) + _center(i);
-    }
-    return corresponding_pos;
+    // "my boundary", and we want the inverse of that here, we multiply
+    // by the transpose of the transformation matrix below.
+    return _R.left_multiply(pt - _center) + _center;
   }
 
   /**
@@ -192,7 +185,10 @@ private:
   Point _center;
   Point _axis;
   Real _theta;
+  RealTensorValue _R;
 };
+
+#endif // LIBMESH_ENABLE_PERIODIC
 
 class LinearElasticity : public System::Assembly
 {
@@ -279,6 +275,8 @@ public:
     std::vector<dof_id_type> dof_indices;
     std::vector<std::vector<dof_id_type>> dof_indices_var(3);
 
+    SparseMatrix<Number> & matrix = system.get_system_matrix();
+
     for (const auto & elem : mesh.active_local_element_ptr_range())
       {
         dof_map.dof_indices (elem, dof_indices);
@@ -312,19 +310,12 @@ public:
                           JxW[qp] * elasticity_tensor(i,j,k,l) * dphi[dof_j][qp](l) * dphi[dof_i][qp](j);
 
             // assemble \int_Omega f_i v_i \dx
-            DenseVector<Number> f_vec(3);
-            if(elem->subdomain_id() == 101)
-              {
-                f_vec(0) = 1.;
-                f_vec(1) = 1.;
-                f_vec(2) = 0.;
-              }
-            else if(elem->subdomain_id() == 1)
-              {
-                f_vec(0) = 0.36603;
-                f_vec(1) = 1.36603;
-                f_vec(2) = 0.;
-              }
+            // The mesh for this example has two subdomains with ids 1
+            // and 101, and the forcing function is different on each.
+            auto f_vec = (elem->subdomain_id() == 101 ?
+                          VectorValue<Number>(1., 1., 0.) :
+                          VectorValue<Number>(0.36603, 1.36603, 0.));
+
             for (unsigned int dof_i=0; dof_i<n_var_dofs; dof_i++)
               for (unsigned int i=0; i<3; i++)
                 Fe_var[i](dof_i) += JxW[qp] * (f_vec(i) * phi[dof_i][qp]);
@@ -332,7 +323,7 @@ public:
 
         dof_map.constrain_element_matrix_and_vector (Ke, Fe, dof_indices);
 
-        system.matrix->add_matrix (Ke, dof_indices);
+        matrix.add_matrix         (Ke, dof_indices);
         system.rhs->add_vector    (Fe, dof_indices);
       }
   }
@@ -354,12 +345,24 @@ int main (int argc, char ** argv)
   libmesh_example_requires(false, "--enable-exodus");
 #endif
 
+  // We use Dirichlet and Periodic boundary conditions here
+#ifndef LIBMESH_ENABLE_DIRICHLET
+  libmesh_example_requires(false, "--enable-dirichlet");
+#endif
+#ifndef LIBMESH_ENABLE_PERIODIC
+  libmesh_example_requires(false, "--enable-periodic");
+#endif
+
   // Initialize the cantilever mesh
   const unsigned int dim = 3;
 
   // Make sure libMesh was compiled for 3D
   libmesh_example_requires(dim == LIBMESH_DIM, "3D support");
 
+  // Make sure libMesh has normal boundary id sizes
+  libmesh_example_requires(sizeof(boundary_id_type) > 1, "boundary_id_size > 1");
+
+#if LIBMESH_BOUNDARY_ID_BYTES > 1
   // Create a 3D mesh distributed across the default MPI communicator.
   Mesh mesh(init.comm());
 
@@ -371,6 +374,7 @@ int main (int argc, char ** argv)
   LinearImplicitSystem & system =
     equation_systems.add_system<LinearImplicitSystem> ("Elasticity");
 
+#ifdef LIBMESH_ENABLE_PERIODIC
   // Add two azimuthal periodic boundaries on two adjacent domains.
   // We do this to show that the periodic boundary condition that
   // we impose leads to a continuous solution across adjacent domains.
@@ -399,6 +403,7 @@ int main (int argc, char ** argv)
     periodic_bc.pairedboundary = 402;
     system.get_dof_map().add_periodic_boundary(periodic_bc);
   }
+#endif // LIBMESH_ENABLE_PERIODIC
 
   mesh.read("systems_of_equations_ex9.exo");
 
@@ -421,8 +426,11 @@ int main (int argc, char ** argv)
   std::set<boundary_id_type> clamped_boundary_ids;
   clamped_boundary_ids.insert(300);
   clamped_boundary_ids.insert(400);
+
+#ifdef LIBMESH_ENABLE_DIRICHLET
   DirichletBoundary clamped_bc(clamped_boundary_ids, variables, zf);
   system.get_dof_map().add_dirichlet_boundary(clamped_bc);
+#endif
 
   // Initialize the data structures for the equation system.
   equation_systems.init();
@@ -440,6 +448,7 @@ int main (int argc, char ** argv)
                                             equation_systems);
 
 #endif // #ifdef LIBMESH_HAVE_EXODUS_API
+#endif // #if LIBMESH_BOUNDARY_ID_BYTES > 1
 
   // All done.
   return 0;

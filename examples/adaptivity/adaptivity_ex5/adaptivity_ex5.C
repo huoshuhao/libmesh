@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -225,8 +225,7 @@ int main (int argc, char ** argv)
   libmesh_example_requires(2 <= LIBMESH_DIM, "2D support");
 
   // Create a new mesh on the default MPI communicator.
-  // DistributedMesh currently has a bug which is triggered by this
-  // example.
+  // There seems to be a DistributedMesh bug triggered here.
   ReplicatedMesh mesh(init.comm());
 
   // Create an equation systems object.
@@ -450,6 +449,13 @@ int main (int argc, char ** argv)
               // and which to coarsen.
               KellyErrorEstimator error_estimator;
 
+              // This is a subclass of JumpErrorEstimator, based
+              // on measuring discontinuities across sides between
+              // elements, and we can tell it to use a cheaper
+              // "unweighted" quadrature rule when numerically
+              // integrating those discontinuities.
+              error_estimator.use_unweighted_quadrature_rules = true;
+
               // Compute the error for each active element using the provided
               // flux_jump indicator.  Note in general you will need to
               // provide an error estimator specifically designed for your
@@ -642,6 +648,9 @@ void assemble_cd (EquationSystems & es,
 
   const Real dt = es.parameters.get<Real>   ("dt");
 
+  // The global system matrix
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
+
   // Now we will loop over all the elements in the mesh that
   // live on the local processor. We will compute the element
   // matrix and right-hand-side contribution.  Since the mesh
@@ -745,7 +754,7 @@ void assemble_cd (EquationSystems & es,
       // for this element.  Add them to the global matrix and
       // right-hand-side vector.  The SparseMatrix::add_matrix()
       // and NumericVector::add_vector() members do this for us.
-      system.matrix->add_matrix (Ke, dof_indices);
+      matrix.add_matrix (Ke, dof_indices);
       system.rhs->add_vector    (Fe, dof_indices);
 
     }

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -28,10 +28,6 @@ namespace
 {
 using namespace libMesh;
 
-typedef Threads::spin_mutex RemoteElemMutex;
-RemoteElemMutex remote_elem_mtx;
-
-
 // Class to be dispatched by Singleton::setup()
 // to create the \p RemoteElem singleton.
 // While this actual object has file-level static
@@ -59,8 +55,6 @@ const RemoteElem * remote_elem;
 
 RemoteElem::~RemoteElem()
 {
-  RemoteElemMutex::scoped_lock lock(remote_elem_mtx);
-
   remote_elem = nullptr;
 }
 
@@ -68,13 +62,6 @@ RemoteElem::~RemoteElem()
 
 const Elem & RemoteElem::create ()
 {
-  if (remote_elem != nullptr)
-    return *remote_elem;
-
-  RemoteElemMutex::scoped_lock lock(remote_elem_mtx);
-
-  // check again - object could have been created while waiting
-  // for the lock to acquire!
   if (remote_elem == nullptr)
     remote_elem = new RemoteElem;
 

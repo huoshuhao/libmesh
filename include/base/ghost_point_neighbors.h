@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,13 +22,18 @@
 
 // Local Includes
 #include "libmesh/ghosting_functor.h"
+#include "libmesh/auto_ptr.h"
 
 namespace libMesh
 {
+#ifdef LIBMESH_ENABLE_PERIODIC
+class PeriodicBoundaries;
+#endif
 
 /**
- * This class implements the default geometry ghosting in libMesh:
- * point neighbors and interior_parent elements are ghosted.
+ * This class implements the original default geometry ghosting
+ * requirements in libMesh: point neighbors on the same manifold, and
+ * interior_parent elements.
  *
  * \author Roy H. Stogner
  * \date 2016
@@ -40,7 +45,52 @@ public:
   /**
    * Constructor.
    */
-  GhostPointNeighbors(const MeshBase & mesh) : _mesh(mesh) {}
+  GhostPointNeighbors(const MeshBase & mesh) :
+      GhostingFunctor(mesh)
+#ifdef LIBMESH_ENABLE_PERIODIC
+      ,
+      _periodic_bcs(nullptr)
+#endif
+    {}
+
+  /**
+   * Constructor.
+   */
+  GhostPointNeighbors(const GhostPointNeighbors & other) :
+      GhostingFunctor(other)
+#ifdef LIBMESH_ENABLE_PERIODIC
+        ,
+      // We do not simply want to copy over the other's periodic bcs because
+      // they may very well correspond to periodic bcs from a \p DofMap entirely
+      // unrelated to any \p DofMaps that depend on this objects ghosting
+      _periodic_bcs(nullptr)
+#endif
+    {}
+
+  /**
+   * A clone() is needed because GhostingFunctor can not be shared between
+   * different meshes. The operations in  GhostingFunctor are mesh dependent.
+   */
+  virtual std::unique_ptr<GhostingFunctor> clone () const override
+  { return libmesh_make_unique<GhostPointNeighbors>(*this); }
+
+#ifdef LIBMESH_ENABLE_PERIODIC
+  // Set PeriodicBoundaries to couple
+  void set_periodic_boundaries(const PeriodicBoundaries * periodic_bcs) override
+  { _periodic_bcs = periodic_bcs; }
+#endif
+
+  /**
+   * If we have periodic boundaries, then we'll need the mesh to have
+   * an updated point locator whenever we're about to query them.
+   */
+  virtual void mesh_reinit () override;
+
+  virtual void redistribute () override
+  { this->mesh_reinit(); }
+
+  virtual void delete_remote_elements() override
+  { this->mesh_reinit(); }
 
   /**
    * For the specified range of active elements, find their point
@@ -50,11 +100,12 @@ public:
   virtual void operator() (const MeshBase::const_element_iterator & range_begin,
                            const MeshBase::const_element_iterator & range_end,
                            processor_id_type p,
-                           map_type & coupled_elements);
+                           map_type & coupled_elements) override;
 
 private:
-
-  const MeshBase & _mesh;
+#ifdef LIBMESH_ENABLE_PERIODIC
+  const PeriodicBoundaries * _periodic_bcs;
+#endif
 };
 
 } // namespace libMesh

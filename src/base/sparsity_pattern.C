@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -17,14 +17,22 @@
 
 
 
-// Local Includes
+// Local includes
+#include "libmesh/sparsity_pattern.h"
+
+// libMesh includes
 #include "libmesh/coupling_matrix.h"
 #include "libmesh/dof_map.h"
 #include "libmesh/elem.h"
 #include "libmesh/ghosting_functor.h"
-#include "libmesh/sparsity_pattern.h"
-#include "libmesh/communicator.h"
+#include "libmesh/hashword.h"
 #include "libmesh/parallel_algebra.h"
+#include "libmesh/parallel.h"
+#include "libmesh/parallel_sync.h"
+#include "libmesh/utility.h"
+
+// TIMPI includes
+#include "timpi/communicator.h"
 
 
 namespace libMesh
@@ -35,19 +43,19 @@ namespace SparsityPattern
 //-------------------------------------------------------
 // we need to implement these constructors here so that
 // a full DofMap definition is available.
-Build::Build (const MeshBase & mesh_in,
-              const DofMap & dof_map_in,
+Build::Build (const DofMap & dof_map_in,
               const CouplingMatrix * dof_coupling_in,
-              std::set<GhostingFunctor *> coupling_functors_in,
+              const std::set<GhostingFunctor *> & coupling_functors_in,
               const bool implicit_neighbor_dofs_in,
-              const bool need_full_sparsity_pattern_in) :
+              const bool need_full_sparsity_pattern_in,
+              const bool calculate_constrained_in) :
   ParallelObject(dof_map_in),
-  mesh(mesh_in),
   dof_map(dof_map_in),
   dof_coupling(dof_coupling_in),
   coupling_functors(coupling_functors_in),
   implicit_neighbor_dofs(implicit_neighbor_dofs_in),
   need_full_sparsity_pattern(need_full_sparsity_pattern_in),
+  calculate_constrained(calculate_constrained_in),
   sparsity_pattern(),
   nonlocal_pattern(),
   n_nz(),
@@ -58,12 +66,13 @@ Build::Build (const MeshBase & mesh_in,
 
 Build::Build (Build & other, Threads::split) :
   ParallelObject(other),
-  mesh(other.mesh),
   dof_map(other.dof_map),
   dof_coupling(other.dof_coupling),
   coupling_functors(other.coupling_functors),
   implicit_neighbor_dofs(other.implicit_neighbor_dofs),
   need_full_sparsity_pattern(other.need_full_sparsity_pattern),
+  calculate_constrained(other.calculate_constrained),
+  hashed_dof_sets(other.hashed_dof_sets),
   sparsity_pattern(),
   nonlocal_pattern(),
   n_nz(),
@@ -91,6 +100,10 @@ void Build::sorted_connected_dofs(const Elem * elem,
   // We can be more efficient if we sort the element DOFs into
   // increasing order
   std::sort(dofs_vi.begin(), dofs_vi.end());
+
+  // Handle cases where duplicate nodes are intentionally assigned to
+  // a single element.
+  dofs_vi.erase(std::unique(dofs_vi.begin(), dofs_vi.end()), dofs_vi.end());
 }
 
 
@@ -101,7 +114,7 @@ void Build::handle_vi_vj(const std::vector<dof_id_type> & element_dofs_i,
   const unsigned int n_dofs_on_element_i =
     cast_int<unsigned int>(element_dofs_i.size());
 
-  const processor_id_type proc_id     = mesh.processor_id();
+  const processor_id_type proc_id     = dof_map.processor_id();
   const dof_id_type first_dof_on_proc = dof_map.first_dof(proc_id);
   const dof_id_type end_dof_on_proc   = dof_map.end_dof(proc_id);
 
@@ -111,10 +124,28 @@ void Build::handle_vi_vj(const std::vector<dof_id_type> & element_dofs_i,
   const unsigned int n_dofs_on_element_j =
     cast_int<unsigned int>(element_dofs_j.size());
 
+  // It only makes sense to compute hashes and see if we can skip
+  // doing work when there are a "large" amount of DOFs for a given
+  // element. The cutoff for "large" is somewhat arbitrarily chosen
+  // based on a test case with a spider node that resulted in O(10^3)
+  // entries in element_dofs_i for O(10^3) elements. Making this
+  // number larger will disable the hashing optimization in more
+  // cases.
+  bool dofs_seen = false;
+  if (n_dofs_on_element_j > 0 && n_dofs_on_element_i > 256)
+    {
+      auto hash_i = Utility::hashword(element_dofs_i);
+      auto hash_j = Utility::hashword(element_dofs_j);
+      auto final_hash = Utility::hashword2(hash_i, hash_j);
+      auto result = hashed_dof_sets.insert(final_hash);
+      // if insert failed, we have already seen these dofs
+      dofs_seen = !result.second;
+    }
+
   // there might be 0 dofs for the other variable on the same element
   // (when subdomain variables do not overlap) and that's when we do
   // not do anything
-  if (n_dofs_on_element_j > 0)
+  if (n_dofs_on_element_j > 0 && !dofs_seen)
     {
       for (unsigned int i=0; i<n_dofs_on_element_i; i++)
         {
@@ -210,7 +241,7 @@ void Build::operator()(const ConstElemRange & range)
   // fed into a PetscMatrix to allocate exactly the number of nonzeros
   // necessary to store the matrix.  This algorithm should be linear
   // in the (# of elements)*(# nodes per element)
-  const processor_id_type proc_id           = mesh.processor_id();
+  const processor_id_type proc_id     = dof_map.processor_id();
   const dof_id_type n_dofs_on_proc    = dof_map.n_dofs_on_processor(proc_id);
   const dof_id_type first_dof_on_proc = dof_map.first_dof(proc_id);
   const dof_id_type end_dof_on_proc   = dof_map.end_dof(proc_id);
@@ -340,7 +371,7 @@ void Build::operator()(const ConstElemRange & range)
 
 void Build::join (const SparsityPattern::Build & other)
 {
-  const processor_id_type proc_id           = mesh.processor_id();
+  const processor_id_type proc_id           = dof_map.processor_id();
   const dof_id_type       n_global_dofs     = dof_map.n_dofs();
   const dof_id_type       n_dofs_on_proc    = dof_map.n_dofs_on_processor(proc_id);
   const dof_id_type       first_dof_on_proc = dof_map.first_dof(proc_id);
@@ -436,6 +467,10 @@ void Build::join (const SparsityPattern::Build & other)
           my_row.erase(std::unique (my_row.begin(), my_row.end()), my_row.end());
         }
     }
+
+  // Combine the other thread's hashed_dof_sets with ours.
+  hashed_dof_sets.insert(other.hashed_dof_sets.begin(),
+                         other.hashed_dof_sets.end());
 }
 
 
@@ -446,24 +481,16 @@ void Build::parallel_sync ()
   libmesh_assert(this->comm().verify(need_full_sparsity_pattern));
 
   auto & comm = this->comm();
-  auto pid = comm.rank();
-  auto num_procs = comm.size();
-
-  auto dof_tag = comm.get_unique_tag(998);
-  auto row_tag = comm.get_unique_tag(9998);
+  auto my_pid = comm.rank();
 
   const auto n_global_dofs   = dof_map.n_dofs();
-  const auto n_dofs_on_proc  = dof_map.n_dofs_on_processor(pid);
+  const auto n_dofs_on_proc  = dof_map.n_dofs_on_processor(my_pid);
   const auto local_first_dof = dof_map.first_dof();
   const auto local_end_dof   = dof_map.end_dof();
 
   // The data to send
-  std::map<processor_id_type, std::pair<std::vector<dof_id_type>, std::vector<Row>>> data_to_send;
-
-  // True/false if we're sending to that processor
-  std::vector<char> will_send_to(num_procs);
-
-  processor_id_type num_sends = 0;
+  std::map<processor_id_type, std::vector<dof_id_type>> ids_to_send;
+  std::map<processor_id_type, std::vector<Row>> rows_to_send;
 
   // Loop over the nonlocal rows and transform them into the new datastructure
   NonlocalGraph::iterator it = nonlocal_pattern.begin();
@@ -476,139 +503,114 @@ void Build::parallel_sync ()
     while (dof_id >= dof_map.end_dof(proc_id))
       proc_id++;
 
-    // Count the unique sends
-    if (!will_send_to[proc_id])
-      num_sends++;
-
-    will_send_to[proc_id] = true;
-
-    // rhs [] on purpose
-    auto & proc_data = data_to_send[proc_id];
-
-    proc_data.first.push_back(dof_id);
+    ids_to_send[proc_id].push_back(dof_id);
 
     // Note this invalidates the data in nonlocal_pattern
-    proc_data.second.emplace_back(std::move(row));
+    rows_to_send[proc_id].push_back(std::move(row));
 
     // Might as well remove it since it's invalidated anyway
     it = nonlocal_pattern.erase(it);
   }
 
-  // Tell everyone about where everyone will send to
-  comm.alltoall(will_send_to);
+  std::map<processor_id_type, std::vector<dof_id_type>> received_ids_map;
 
-  // will_send_to now represents who we'll receive from
-  // give it a good name
-  auto & will_receive_from = will_send_to;
-
-  std::vector<Parallel::Request> dof_sends(num_sends);
-  std::vector<Parallel::Request> row_sends(num_sends);
-
-  // Post all of the sends
-  processor_id_type current_send = 0;
-  for (auto & proc_data : data_to_send)
-  {
-    auto proc_id = proc_data.first;
-
-    auto & dofs = proc_data.second.first;
-    auto & rows = proc_data.second.second;
-
-    comm.send(proc_id, dofs, dof_sends[current_send], dof_tag);
-    comm.send(proc_id, rows, row_sends[current_send], row_tag);
-
-    current_send++;
-  }
-
-  // Figure out how many receives we're going to have and make a
-  // quick list of who's sending
-  processor_id_type num_receives = 0;
-  std::vector<processor_id_type> receiving_from;
-  for (processor_id_type proc_id = 0; proc_id < num_procs; proc_id++)
-  {
-    auto will = will_receive_from[proc_id];
-
-    if (will)
+  auto ids_action_functor =
+    [& received_ids_map]
+    (processor_id_type pid,
+     const std::vector<dof_id_type> & received_ids)
     {
-      num_receives++;
-      receiving_from.push_back(proc_id);
-    }
-  }
+      received_ids_map.emplace(pid, received_ids);
+    };
 
-  // Post the receives and handle the data
-  for (auto proc_id : receiving_from)
-  {
-    std::vector<dof_id_type> in_dofs;
-    std::vector<Row> in_rows;
+  Parallel::push_parallel_vector_data(this->comm(), ids_to_send,
+                                      ids_action_functor);
 
-    // Receive dofs
-    comm.receive(proc_id, in_dofs, dof_tag);
-    comm.receive(proc_id, in_rows, row_tag);
-
-    const std::size_t n_rows = in_dofs.size();
-    for (std::size_t i = 0; i != n_rows; ++i)
+  auto rows_action_functor =
+    [this,
+     & received_ids_map,
+     n_global_dofs,
+     n_dofs_on_proc,
+     local_first_dof,
+     local_end_dof]
+    (processor_id_type pid,
+     const std::vector<Row> & received_rows)
     {
-      const auto r = in_dofs[i];
-      const auto my_r = r - local_first_dof;
+      const std::vector<dof_id_type> & received_ids = libmesh_map_find(received_ids_map, pid);
 
-      auto & their_row = in_rows[i];
+      std::size_t n_rows = received_rows.size();
+      libmesh_assert_equal_to(n_rows, received_ids.size());
 
-      if (need_full_sparsity_pattern)
-      {
-        auto & my_row = sparsity_pattern[my_r];
-
-        // They wouldn't have sent an empty row
-        libmesh_assert(!their_row.empty());
-
-        // We can end up with an empty row on a dof that touches our
-        // inactive elements but not our active ones
-        if (my_row.empty())
+      for (auto i : IntRange<std::size_t>(0, n_rows))
         {
-          my_row.assign (their_row.begin(), their_row.end());
-        }
-        else
-        {
-          my_row.insert (my_row.end(),
-                         their_row.begin(),
-                         their_row.end());
+          const auto r = received_ids[i];
+          libmesh_assert(dof_map.local_index(r));
 
-          // We cannot use SparsityPattern::sort_row() here because it expects
-          // the [begin,middle) [middle,end) to be non-overlapping.  This is not
-          // necessarily the case here, so use std::sort()
-          std::sort (my_row.begin(), my_row.end());
+          const auto my_r = r - local_first_dof;
 
-          my_row.erase(std::unique (my_row.begin(), my_row.end()), my_row.end());
-        }
+          auto & their_row = received_rows[i];
 
-        // fix the number of on and off-processor nonzeros in this row
-        n_nz[my_r] = n_oz[my_r] = 0;
+          if (need_full_sparsity_pattern)
+            {
+              auto & my_row = sparsity_pattern[my_r];
 
-        for (const auto & df : my_row)
-          if ((df < local_first_dof) || (df >= local_end_dof))
-            n_oz[my_r]++;
+              // They wouldn't have sent an empty row
+              libmesh_assert(!their_row.empty());
+
+              // We can end up with an empty row on a dof that touches our
+              // inactive elements but not our active ones
+              if (my_row.empty())
+              {
+                my_row.assign (their_row.begin(), their_row.end());
+              }
+              else
+              {
+                my_row.insert (my_row.end(),
+                               their_row.begin(),
+                               their_row.end());
+
+                // We cannot use SparsityPattern::sort_row() here because it expects
+                // the [begin,middle) [middle,end) to be non-overlapping.  This is not
+                // necessarily the case here, so use std::sort()
+                std::sort (my_row.begin(), my_row.end());
+
+                my_row.erase(std::unique (my_row.begin(), my_row.end()), my_row.end());
+              }
+
+              // fix the number of on and off-processor nonzeros in this row
+              n_nz[my_r] = n_oz[my_r] = 0;
+
+              for (const auto & df : my_row)
+                if ((df < local_first_dof) || (df >= local_end_dof))
+                  n_oz[my_r]++;
+                else
+                  n_nz[my_r]++;
+            }
           else
-            n_nz[my_r]++;
-      }
-      else
-      {
-        for (const auto & df : their_row)
-          if ((df < local_first_dof) || (df >= local_end_dof))
-            n_oz[my_r]++;
-          else
-            n_nz[my_r]++;
+            {
+              for (const auto & df : their_row)
+                if ((df < local_first_dof) || (df >= local_end_dof))
+                  n_oz[my_r]++;
+                else
+                  n_nz[my_r]++;
 
-        n_nz[my_r] = std::min(n_nz[my_r], n_dofs_on_proc);
-        n_oz[my_r] = std::min(n_oz[my_r],
-                              static_cast<dof_id_type>(n_global_dofs-n_nz[my_r]));
-      }
-    }
-  }
+              n_nz[my_r] = std::min(n_nz[my_r], n_dofs_on_proc);
+              n_oz[my_r] = std::min(n_oz[my_r],
+                                    static_cast<dof_id_type>(n_global_dofs-n_nz[my_r]));
+            }
+        }
+    };
+
+  Parallel::push_parallel_vector_data(this->comm(), rows_to_send,
+                                      rows_action_functor);
 
   // We should have sent everything at this point.
   libmesh_assert (nonlocal_pattern.empty());
+}
 
-  // Make sure to cleanup requests
-  Parallel::wait(dof_sends);
-  Parallel::wait(row_sends);
+
+void Build::apply_extra_sparsity_object(SparsityPattern::AugmentSparsityPattern & asp)
+{
+  asp.augment_sparsity_pattern (sparsity_pattern, n_nz, n_oz);
 }
 
 

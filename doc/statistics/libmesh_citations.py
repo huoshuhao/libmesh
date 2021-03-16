@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import matplotlib.pyplot as plt
 import numpy as np
+import argparse
 
 """
 This script creates a bar graph of the number of "papers using libmesh" by year.
@@ -25,24 +26,30 @@ This script creates a bar graph of the number of "papers using libmesh" by year.
 # directory. Note: you must have bibtex2html in your PATH in order to
 # run this script.
 data = [
-'\'04', 5,
+'\'04', 7,
 '\'05', 2,
-'\'06', 14,
-'\'07', 8,
-'\'08', 23,
-'\'09', 29,
-'\'10', 26,
-'\'11', 34,
-'\'12', 56,
-'\'13', 82,
-'\'14', 74,
-'\'15', 94,
-'\'16', 125,
-'\'17', 134,
-'\'18', 150,
-'\'19', 31,
-'T', 102,
+'\'06', 15,
+'\'07', 10,
+'\'08', 30,
+'\'09', 31,
+'\'10', 30,
+'\'11', 40,
+'\'12', 57,
+'\'13', 89,
+'\'14', 82,
+'\'15', 109,
+'\'16', 145,
+'\'17', 153,
+'\'18', 158,
+'\'19', 130,
+'\'20', 191,
+'\'21', 30,
     ]
+
+# Parse command line args
+parser = argparse.ArgumentParser()
+parser.add_argument("--png", action='store_true', default=False)
+args = parser.parse_args()
 
 # Extract the x-axis labels from the data array
 ticklabels = data[0::2]
@@ -69,17 +76,11 @@ width = 0.8
 # The colors used come from sns.color_palette("muted").as_hex() They
 # are the "same basic order of hues as the default matplotlib color
 # cycle but more attractive colors."
-ax.bar(x[0:N-1], n_papers[0:N-1], width, color=u'#4878cf', align='center')
-ax.bar(x[-1],    n_papers[-1],    width, color=u'#6acc65', align='center')
+ax.bar(x[0:N], n_papers[0:N], width, color=u'#4878cf', align='center')
 
-# Label the x-axis
-plt.xlabel('T=PhD, MS, and BS Theses')
-
-# Set up the xtick locations and labels.  Note that you have to offset
-# the position of the ticks by width/2, where width is the width of
-# the bars.
-ax.set_xticks(np.linspace(1,N,N))
-ax.set_xticklabels(ticklabels)
+# Set up the xtick locations and labels.
+ax.set_xticks(x[::2]) # place ticks at every other element of x
+ax.set_xticklabels(ticklabels[::2])
 ax.tick_params(direction='out')
 ax.set_xlim([0,N+1])
 
@@ -89,6 +90,15 @@ fig.suptitle(title_string)
 
 # Save as PDF
 plt.savefig('libmesh_citations.pdf')
+
+# Also save png for uploading to wiki. On Ubuntu, you may need to run
+# the following command to get this working:
+# sudo apt-get install dvipng
+# To subsequently update the website,
+# cp *.png ~/projects/libMesh.github.io/images/
+# and then push the changes.
+if args.png:
+  plt.savefig('libmesh_citations.png', format='png', dpi=200)
 
 # Local Variables:
 # python-indent: 2

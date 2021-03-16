@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -26,6 +26,7 @@
 #include "libmesh/face_inf_quad4.h"
 #include "libmesh/fe_type.h"
 #include "libmesh/fe_interface.h"
+#include "libmesh/inf_fe_map.h"
 #include "libmesh/enum_order.h"
 
 namespace libMesh
@@ -83,18 +84,29 @@ dof_id_type InfPrism::key (const unsigned int s) const
 
 
 
-unsigned int InfPrism::which_node_am_i(unsigned int side,
+unsigned int InfPrism::local_side_node(unsigned int side,
                                        unsigned int side_node) const
 {
   libmesh_assert_less (side, this->n_sides());
 
   // Never more than 4 nodes per side.
-  libmesh_assert_less(side_node, 4);
+  libmesh_assert_less(side_node, InfPrism6::nodes_per_side);
 
   // Some sides have 3 nodes.
   libmesh_assert(side != 0 || side_node < 3);
 
   return InfPrism6::side_nodes_map[side][side_node];
+}
+
+
+
+unsigned int InfPrism::local_edge_node(unsigned int edge,
+                                       unsigned int edge_node) const
+{
+  libmesh_assert_less(edge, this->n_edges());
+  libmesh_assert_less(edge_node, InfPrism6::nodes_per_edge);
+
+  return InfPrism6::edge_nodes_map[edge][edge_node];
 }
 
 
@@ -126,7 +138,7 @@ std::unique_ptr<Elem> InfPrism::side_ptr (const unsigned int i)
     }
 
   // Set the nodes
-  for (unsigned n=0; n<face->n_nodes(); ++n)
+  for (auto n : face->node_index_range())
     face->set_node(n) = this->node_ptr(InfPrism6::side_nodes_map[i][n]);
 
   return face;
@@ -196,8 +208,8 @@ bool InfPrism::is_edge_on_side (const unsigned int e,
   libmesh_assert_less (e, this->n_edges());
   libmesh_assert_less (s, this->n_sides());
 
-  return (is_node_on_side(InfPrism6::edge_nodes_map[e][0],s) &&
-          is_node_on_side(InfPrism6::edge_nodes_map[e][1],s));
+  return (InfPrism6::edge_sides_map[e][0] == s ||
+          InfPrism6::edge_sides_map[e][1] == s);
 }
 
 bool InfPrism::contains_point (const Point & p, Real tol) const
@@ -212,7 +224,7 @@ bool InfPrism::contains_point (const Point & p, Real tol) const
   // envelope may be non-spherical, the physical point may lie
   // inside the envelope, outside the envelope, or even inside
   // this infinite element.  Therefore if this fails,
-  // fall back to the FEInterface::inverse_map()
+  // fall back to the inverse_map()
   const Point my_origin (this->origin());
 
   // determine the minimal distance of the base from the origin
@@ -221,9 +233,18 @@ bool InfPrism::contains_point (const Point & p, Real tol) const
   Point pt0_o(this->point(0) - my_origin);
   Point pt1_o(this->point(1) - my_origin);
   Point pt2_o(this->point(2) - my_origin);
-  const Real min_distance_sq = std::min(pt0_o.norm_sq(),
-                                        std::min(pt1_o.norm_sq(),
-                                                 pt2_o.norm_sq()));
+  const Real tmp_min_distance_sq = std::min(pt0_o.norm_sq(),
+                                            std::min(pt1_o.norm_sq(),
+                                                     pt2_o.norm_sq()));
+
+  // For a coarse grid, it is important to account for the fact
+  // that the sides are not spherical, thus the closest point
+  // can be closer than all edges.
+  // This is an estimator using Pythagoras:
+  const Real min_distance_sq = tmp_min_distance_sq
+                              - .5*std::max((point(0)-point(1)).norm_sq(),
+                                             std::max((point(0)-point(2)).norm_sq(),
+                                                      (point(1)-point(2)).norm_sq()));
 
   // work with 1% allowable deviation.  We can still fall
   // back to the InfFE::inverse_map()
@@ -261,12 +282,8 @@ bool InfPrism::contains_point (const Point & p, Real tol) const
   // and something else (not important) in radial direction.
   FEType fe_type(default_order());
 
-  const Point mapped_point = FEInterface::inverse_map(dim(),
-                                                      fe_type,
-                                                      this,
-                                                      p,
-                                                      tol,
-                                                      false);
+  const Point mapped_point = InfFEMap::inverse_map(dim(), this, p,
+                                                   tol, false);
 
   return FEInterface::on_reference_element(mapped_point, this->type(), tol);
 }

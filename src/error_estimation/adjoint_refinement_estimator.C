@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -75,6 +75,7 @@ AdjointRefinementEstimator::AdjointRefinementEstimator() :
   number_h_refinements(1),
   number_p_refinements(0),
   _residual_evaluation_physics(nullptr),
+  _adjoint_evaluation_physics(nullptr),
   _qoi_set(QoISet())
 {
   // We're not actually going to use error_norm; our norms are
@@ -111,8 +112,25 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
 
   // Solve the adjoint problem(s) on the coarse FE space
   // Only if the user didn't already solve it for us
+  // If _adjoint_evaluation_physics pointer is not null, swap
+  // the current physics with the one held by _adjoint_evaluation_physics
+  // before assembling the adjoint problem
   if (!system.is_adjoint_already_solved())
-    system.adjoint_solve(_qoi_set);
+  {
+    // Swap the physics if needed, note that the current physics pointer
+    // held by the system will be pointed to by _adjoint_evalation_physics after swapping
+    const bool swapping_adjoint_physics = _adjoint_evaluation_physics;
+    if (swapping_adjoint_physics)
+      dynamic_cast<DifferentiableSystem &>(system).swap_physics(_adjoint_evaluation_physics);
+
+    // Solve the adjoint problem, remember physics swap also resets the cache, so
+    // we will assemble again, otherwise we just take the transpose
+    (dynamic_cast<ImplicitSystem &>(system)).adjoint_solve(_qoi_set);
+
+    // Swap back if needed, recall that _adjoint_evaluation_physics now holds the pointer to the pre-swap physics
+    if (swapping_adjoint_physics)
+      dynamic_cast<DifferentiableSystem &>(system).swap_physics(_adjoint_evaluation_physics);
+  }
 
   // Loop over all the adjoint problems and, if any have heterogenous
   // Dirichlet conditions, get the corresponding coarse lift
@@ -135,8 +153,8 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
           // If the residual physics pointer is not null, use it when
           // evaluating here.
           {
-            const bool swapping_physics = _residual_evaluation_physics;
-            if (swapping_physics)
+            const bool swapping_primal_physics = _residual_evaluation_physics;
+            if (swapping_primal_physics)
               dynamic_cast<DifferentiableSystem &>(system).swap_physics(_residual_evaluation_physics);
 
             // Assemble without applying constraints, to capture the solution values on the boundary
@@ -163,7 +181,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
             std::cout<<"The flux QoI "<<static_cast<unsigned int>(j)<<" is: "<<coarse_residual->dot(system.get_vector(liftfunc_name.str()))<<std::endl<<std::endl;
 
             // Swap back if needed
-            if (swapping_physics)
+            if (swapping_primal_physics)
               dynamic_cast<DifferentiableSystem &>(system).swap_physics(_residual_evaluation_physics);
           }
         } // End if QoI in set and flux/dirichlet boundary QoI
@@ -183,12 +201,40 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   std::unique_ptr<NumericVector<Number>> coarse_solution = system.solution->clone();
   std::unique_ptr<NumericVector<Number>> coarse_local_solution = system.current_local_solution->clone();
 
+  // We need to make sure that the coarse adjoint vectors used in the
+  // calculations below are preserved during reinit, regardless of how
+  // the user is treating them in their code
+  // The adjoint lift function we have defined above is set to be preserved
+  // by default
+  std::vector<bool> old_adjoints_projection_settings(system.n_qois());
+  for (auto j : make_range(system.n_qois()))
+    {
+      if (_qoi_set.has_index(j))
+        {
+          // Get the vector preservation setting for this adjoint vector
+          auto adjoint_vector_name = system.vector_name(system.get_adjoint_solution(j));
+          auto old_adjoint_vector_projection_setting = system.vector_preservation(adjoint_vector_name);
+
+          // Save for restoration later on
+          old_adjoints_projection_settings[j] = old_adjoint_vector_projection_setting;
+
+          // Set the preservation to true for the upcoming reinits
+          system.set_vector_preservation(adjoint_vector_name, true);
+        }
+    }
+
   // And we'll need to temporarily change solution projection settings
   bool old_projection_setting;
   old_projection_setting = system.project_solution_on_reinit();
 
   // Make sure the solution is projected when we refine the mesh
   system.project_solution_on_reinit() = true;
+
+  // And we need to make sure we dont reapply constraints after refining the mesh
+  bool old_project_with_constraints_setting;
+  old_project_with_constraints_setting = system.get_project_with_constraints();
+
+  system.set_project_with_constraints(false);
 
   // And it'll be best to avoid any repartitioning
   std::unique_ptr<Partitioner> old_partitioner(mesh.partitioner().release());
@@ -231,7 +277,13 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // Uniformly refine the mesh
   MeshRefinement mesh_refinement(mesh);
 
-  libmesh_assert (number_h_refinements > 0 || number_p_refinements > 0);
+  // We only need to worry about Galerkin orthogonality if we
+  // are estimating discretization error in a single model setting
+  {
+    const bool swapping_adjoint_physics = _adjoint_evaluation_physics;
+    if(!swapping_adjoint_physics)
+      libmesh_assert (number_h_refinements > 0 || number_p_refinements > 0);
+  }
 
   // FIXME: this may break if there is more than one System
   // on this mesh but estimate_error was still called instead of
@@ -251,7 +303,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // Copy the projected coarse grid solutions, which will be
   // overwritten by solve()
   std::vector<std::unique_ptr<NumericVector<Number>>> coarse_adjoints;
-  for (unsigned int j=0; j != system.n_qois(); j++)
+  for (auto j : make_range(system.n_qois()))
     {
       if (_qoi_set.has_index(j))
         {
@@ -275,25 +327,35 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // If the residual physics pointer is not null, use it when
   // evaluating here.
   {
-    const bool swapping_physics = _residual_evaluation_physics;
-    if (swapping_physics)
+    const bool swapping_primal_physics = _residual_evaluation_physics;
+    if (swapping_primal_physics)
       dynamic_cast<DifferentiableSystem &>(system).swap_physics(_residual_evaluation_physics);
 
-    // Rebuild the rhs with the projected primal solution, constraints
-    // have to be applied to get the correct error estimate since error
-    // on the Dirichlet boundary is zero
-    (dynamic_cast<ImplicitSystem &>(system)).assembly(true, false);
+    // Rebuild the rhs with the projected primal solution, do not apply constraints
+    (dynamic_cast<ImplicitSystem &>(system)).assembly(true, false, false, true);
 
     // Swap back if needed
-    if (swapping_physics)
+    if (swapping_primal_physics)
       dynamic_cast<DifferentiableSystem &>(system).swap_physics(_residual_evaluation_physics);
   }
 
   NumericVector<Number> & projected_residual = (dynamic_cast<ExplicitSystem &>(system)).get_vector("RHS Vector");
   projected_residual.close();
 
+  const bool swapping_adjoint_physics = _adjoint_evaluation_physics;
+  if (swapping_adjoint_physics)
+    dynamic_cast<DifferentiableSystem &>(system).swap_physics(_adjoint_evaluation_physics);
+
   // Solve the adjoint problem(s) on the refined FE space
-  system.adjoint_solve(_qoi_set);
+  // The matrix will be reassembled again because we have refined the mesh
+  // If we have no h or p refinements, no need to solve for a fine adjoint
+  if(number_h_refinements > 0 || number_p_refinements > 0)
+    (dynamic_cast<ImplicitSystem &>(system)).adjoint_solve(_qoi_set);
+
+  // Swap back if needed, recall that _adjoint_evaluation_physics now holds the pointer
+  // to the pre-swap physics
+  if (swapping_adjoint_physics)
+    dynamic_cast<DifferentiableSystem &>(system).swap_physics(_adjoint_evaluation_physics);
 
   // Now that we have the refined adjoint solution and the projected primal solution,
   // we first compute the global QoI error estimate
@@ -304,7 +366,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // Loop over all the adjoint solutions and get the QoI error
   // contributions from all of them.  While we're looping anyway we'll
   // pull off the coarse adjoints
-  for (unsigned int j=0; j != system.n_qois(); j++)
+  for (auto j : make_range(system.n_qois()))
     {
       // Skip this QoI if not in the QoI Set
       if (_qoi_set.has_index(j))
@@ -341,6 +403,26 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
         }
     }
 
+  // We are all done with Dirichlet lift vectors and they should be removed, lest we run into I/O issues later
+  for (auto j : make_range(system.n_qois()))
+    {
+      // Skip this QoI if not in the QoI Set
+      if (_qoi_set.has_index(j))
+        {
+          // Lifts are created only for adjoint dirichlet QoIs
+          if(system.get_dof_map().has_adjoint_dirichlet_boundaries(j))
+            {
+              // Need to create a string with current loop index to retrieve
+              // the correct vector from the liftvectors map
+              std::ostringstream liftfunc_name;
+              liftfunc_name << "adjoint_lift_function" << j;
+
+              // Remove the lift vector from system since we did not write it to file and it cannot be retrieved
+              system.remove_vector(liftfunc_name.str());
+            }
+        }
+    }
+
   // Done with the global error estimates, now construct the element wise error indicators
 
   // To get a better element wise breakdown of the error estimate,
@@ -350,7 +432,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // stabilized/non-stabilized formulations, except for the case where we not using a
   // heterogenous adjoint bc and have a stabilized formulation.
   // Then, R(u^h_s, z^h_s)  != 0 (no Galerkin orthogonality w.r.t the non-stabilized residual)
-  for (unsigned int j=0; j != system.n_qois(); j++)
+  for (auto j : make_range(system.n_qois()))
     {
       // Skip this QoI if not in the QoI Set
       if (_qoi_set.has_index(j))
@@ -399,11 +481,8 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   // We will be iterating over all the active elements in the fine mesh that live on
   // this processor.
   for (const auto & elem : mesh.active_local_element_ptr_range())
-    for (unsigned int n=0; n != elem->n_nodes(); ++n)
+    for (const Node & node : elem->node_ref_range())
       {
-        // Get a reference to the current node
-        const Node & node = elem->node_ref(n);
-
         // Get the id of this node
         dof_id_type node_id = node.id();
 
@@ -437,7 +516,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
                 std::size_t j = 0;
 
                 // If the set already contains this element break out of the loop
-                for (; j != coarse_grid_neighbors.size(); j++)
+                for (std::size_t cgns = coarse_grid_neighbors.size(); j != cgns; j++)
                   if (coarse_grid_neighbors[j] == coarse_id)
                     break;
 
@@ -476,7 +555,7 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
 
   // We will loop over each adjoint solution, localize that adjoint
   // solution and then loop over local elements
-  for (unsigned int i=0; i != system.n_qois(); i++)
+  for (auto i : make_range(system.n_qois()))
     {
       // Skip this QoI if not in the QoI Set
       if (_qoi_set.has_index(i))
@@ -528,7 +607,10 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
   system.project_solution_on_reinit() = false;
 
   // Uniformly coarsen the mesh, without projecting the solution
-  libmesh_assert (number_h_refinements > 0 || number_p_refinements > 0);
+  // Only need to do this if we are estimating discretization error
+  // with a single physics residual
+  if(!swapping_adjoint_physics)
+    libmesh_assert (number_h_refinements > 0 || number_p_refinements > 0);
 
   for (unsigned int i = 0; i != number_h_refinements; ++i)
     {
@@ -566,6 +648,17 @@ void AdjointRefinementEstimator::estimate_error (const System & _system,
 
   // Restore old solutions and clean up the heap
   system.project_solution_on_reinit() = old_projection_setting;
+  system.set_project_with_constraints(old_project_with_constraints_setting);
+
+  // Restore the adjoint vector preservation settings
+  for (auto j : make_range(system.n_qois()))
+    {
+      if (_qoi_set.has_index(j))
+        {
+          auto adjoint_vector_name = system.vector_name(system.get_adjoint_solution(j));
+          system.set_vector_preservation(adjoint_vector_name, old_adjoints_projection_settings[j]);
+        }
+    }
 
   // Restore the coarse solution vectors and delete their copies
   *system.solution = *coarse_solution;

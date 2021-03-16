@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -24,14 +24,16 @@
 #include "libmesh/libmesh_common.h"
 #include "libmesh/libmesh.h"
 #include "libmesh/enum_xdr_mode.h" // READ, WRITE, etc.
-#include "libmesh/auto_ptr.h" // deprecated
 
 // C++ includes
 #include <memory>
 #include <cstdio> // FILE
 #ifdef LIBMESH_HAVE_XDR
+// I see a redundant declaration warning here on Ubuntu 20.10
+#include "libmesh/ignore_warnings.h"
 # include <rpc/rpc.h>
 # include <rpc/xdr.h>
+#include "libmesh/restore_warnings.h"
 #endif
 
 #include <iosfwd>

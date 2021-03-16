@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -24,7 +24,6 @@
 // Local Includes
 #include "libmesh/libmesh_common.h"
 #include "libmesh/compare_types.h" // remove_const
-#include "libmesh/auto_ptr.h" // deprecated
 
 // C++ includes
 #include <memory>
@@ -73,16 +72,6 @@ public:
   virtual const T & get () const = 0;
 
   /**
-   * Reseater: change the location of the parameter we access.
-   * This is included for backward compatibility, but will be
-   * deprecated in some classes and not implemented in others.
-   */
-#ifdef LIBMESH_ENABLE_DEPRECATED
-  virtual ParameterAccessor<T> &
-  operator= (T * /* new_ptr */) { libmesh_error(); return *this; }
-#endif
-
-  /**
    * Proxy: for backward compatibility, we allow codes to treat a
    * ParameterAccessor as if it were a simple pointer-to-value.  We
    * can't safely allow "Number * n = parameter_vector[p]" to compile,
@@ -109,6 +98,11 @@ public:
    */
   ParameterProxy (ParameterAccessor<T> & accessor)
     : _accessor(accessor) {}
+
+  /**
+   * Default Copy Constructor works
+   */
+  ParameterProxy (const ParameterProxy<T> & accessor) = default;
 
   /**
    * Setter: change the value of the parameter we access.
@@ -150,6 +144,10 @@ public:
    */
   operator T () const { return _accessor.get(); }
 
+#ifdef LIBMESH_DEFAULT_QUADRUPLE_PRECISION
+  operator boost::multiprecision::backends::float128_backend () const { return _accessor.get().backend(); }
+#endif
+
 private:
   ParameterAccessor<T> & _accessor;
 };
@@ -174,6 +172,10 @@ public:
    * Getter: get the value of the parameter we access.
    */
   T get() const { return _accessor.get(); }
+
+#ifdef LIBMESH_DEFAULT_QUADRUPLE_PRECISION
+  operator boost::multiprecision::backends::float128_backend () const { return _accessor.get().backend(); }
+#endif
 
 private:
   const ParameterAccessor<T> & _accessor;

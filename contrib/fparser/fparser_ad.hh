@@ -3,6 +3,8 @@
 
 #include "fparser.hh"
 #include <exception>
+#include <iostream>
+#include <fstream>
 
 template<typename Value_t>
 class ADImplementation;
@@ -41,6 +43,11 @@ public:
    * function to be optimized.
    */
   bool isZero();
+
+  /**
+   * check if the function's byte code is empty.
+   */
+  bool isEmpty() { return this->mData->mByteCode.empty(); }
 
   /**
    * set the bytecode of this function to return constant zero.
@@ -127,12 +134,35 @@ public:
    */
   void RegisterDerivative(const std::string & a, const std::string & b, const std::string & c);
 
-private:
+protected:
+
+#if LIBMESH_HAVE_FPARSER_JIT
+  /// return a SHA1 hash for the current bytecode and value type name
+  std::size_t JITCodeHash(const std::string & value_type_name = "");
+
+  /// write generated C++ code to stream
+  bool JITCodeGen(std::ostream & ccout, const std::string & fname, const std::string & Value_t_name);
+
   /// helper function to perform the JIT compilation (needs the Value_t typename as a string)
-  bool JITCompileHelper(const std::string &);
+  bool JITCompileHelper(const std::string & Value_t_name,
+                        const std::string & extra_options = "",
+                        const std::string & extra_headers = "");
+#endif // LIBMESH_HAVE_FPARSER_JIT
+
+  /// function pointer type alias. This permits a Real Value_t function to be compiled
+  /// to support dual numbers
+  template <typename ActualValue_t>
+  using CompiledFunctionPtr = void (*)(ActualValue_t *, const ActualValue_t *,
+                                       const Value_t *, const Value_t);
+
+  /// update pointer to immediate data
+  void updatePImmed();
+
+  /// clear the runtime evaluation error flag
+  void clearEvalError() { this->mData->mEvalErrorType = 0; }
 
   /// JIT function pointer
-  Value_t (*compiledFunction)(const Value_t *, const Value_t *, const Value_t);
+  void *compiledFunction;
 
   /// pointer to the mImmed values (or NULL if the mImmed vector is empty)
   Value_t * pImmed;
@@ -173,6 +203,42 @@ private:
   } UnknownSerializationVersionException;
 };
 
+#ifdef LIBMESH_HAVE_FPARSER_JIT
+
+/// Namespacing the utility classes (rather than nesting them in a templated class)
+namespace FParserJIT
+{
+
+/// return a hex representation of the given hash
+std::string hashToString(std::size_t hash);
+
+/// Handle compilation, caching, and temporary files
+class Compiler
+{
+public:
+  Compiler(const std::string & master_hash = "");
+  ~Compiler();
+  std::ostream & source();
+
+  bool probeCache();
+  bool run(const std::string & compiler_options = "");
+  void * getFunction(const std::string & fname);
+
+protected:
+  std::ofstream _ccout;
+  void * _lib;
+  const std::string _jitdir;
+  std::string _ccname;
+  std::string _objectname;
+  std::string _object_so;
+  bool _success;
+
+  const std::string _master_hash;
+  const bool _use_cache;
+};
+} // namespace FParserJIT
+
+#endif // LIBMESH_HAVE_FPARSER_JIT
 
 class FunctionParserAD: public FunctionParserADBase<double> {};
 class FunctionParserAD_f: public FunctionParserADBase<float> {};

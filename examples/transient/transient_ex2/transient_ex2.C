@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -107,20 +107,15 @@ int main (int argc, char** argv)
                            "--enable-petsc, --enable-trilinos, or --enable-eigen");
 
   // Check for proper usage.
-  if (argc < 2)
-    libmesh_error_msg("Usage: " << argv[0] << " [meshfile]");
+  libmesh_error_msg_if(argc < 2, "Usage: " << argv[0] << " [meshfile]");
 
   // Tell the user what we are doing.
-  else
-    {
-      libMesh::out << "Running " << argv[0];
+  libMesh::out << "Running " << argv[0];
 
-      for (int i=1; i<argc; i++)
-        libMesh::out << " " << argv[i];
+  for (int i=1; i<argc; i++)
+    libMesh::out << " " << argv[i];
 
-      libMesh::out << std::endl << std::endl;
-
-    }
+  libMesh::out << std::endl << std::endl;
 
   // LasPack solvers don't work so well for this example, Trilinos doesn't work at all.
   // PETSc and Eigen both work...
@@ -333,10 +328,11 @@ void assemble_wave(EquationSystems & es,
   // The dimension that we are running.
   const unsigned int dim = mesh.mesh_dimension();
 
-  // Copy the speed of sound and fluid density
-  // to a local variable.
+  // Copy the speed of sound to a local variable.
   const Real speed = es.parameters.get<Real>("speed");
-  const Real rho   = es.parameters.get<Real>("fluid density");
+
+  // If we added Neumann conditions we would need density too
+  // const Real rho   = es.parameters.get<Real>("fluid density");
 
   // Get a reference to our system, as before.
   NewmarkSystem & t_system = es.get_system<NewmarkSystem> (system_name);
@@ -460,9 +456,9 @@ void assemble_wave(EquationSystems & es,
         // be extended.
         //
         // don't do this for any side
+#if 0
         for (auto side : elem->side_index_range())
-          if (!true)
-            // if (elem->neighbor_ptr(side) == nullptr)
+          if (elem->neighbor_ptr(side) == nullptr)
             {
               // Declare a special finite element object for
               // boundary integration.
@@ -505,6 +501,7 @@ void assemble_wave(EquationSystems & es,
                     }
                 } // end face quadrature point loop
             } // end if (elem->neighbor_ptr(side) == nullptr)
+#endif // 0
 
         // In this example the Dirichlet boundary conditions will be
         // imposed via penalty method after the

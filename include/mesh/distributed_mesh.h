@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -73,9 +73,9 @@ public:
   DistributedMesh (const DistributedMesh & other_mesh);
 
   /**
-   * Move-constructor.
+   * Move-constructor deleted in MeshBase.
    */
-  DistributedMesh(DistributedMesh &&) = default;
+  DistributedMesh(DistributedMesh &&) = delete;
 
   /**
    * Copy and move assignment are not allowed.
@@ -215,6 +215,16 @@ public:
    */
   virtual void clear_extra_ghost_elems() { _extra_ghost_elems.clear(); }
 
+  /**
+   * Clears specified extra ghost elements
+   */
+  virtual void clear_extra_ghost_elems(const std::set<Elem *> & extra_ghost_elems);
+
+  /**
+   * Const accessor to the ghosted elements
+   */
+  const std::set<Elem *> & extra_ghost_elems() const { return _extra_ghost_elems; }
+
   // Cached methods that can be called in serial
   virtual dof_id_type n_nodes () const override { return _n_nodes; }
   virtual dof_id_type max_node_id () const override { return _max_node_id; }
@@ -235,6 +245,7 @@ public:
 
 #ifdef LIBMESH_ENABLE_UNIQUE_ID
   virtual unique_id_type parallel_max_unique_id () const override;
+  virtual void set_next_unique_id(unique_id_type id) override;
 #endif
 
   virtual const Point & point (const dof_id_type i) const override;
@@ -258,11 +269,13 @@ public:
                             const dof_id_type id = DofObject::invalid_id,
                             const processor_id_type proc_id = DofObject::invalid_processor_id) override;
   virtual Node * add_node (Node * n) override;
+  virtual Node * add_node (std::unique_ptr<Node> n) override;
 
   /**
    * Calls add_node().
    */
   virtual Node * insert_node(Node * n) override;
+  virtual Node * insert_node(std::unique_ptr<Node> n) override;
 
   /**
    * Takes ownership of node \p n on this partition of a distributed
@@ -275,7 +288,9 @@ public:
   virtual void delete_node (Node * n) override;
   virtual void renumber_node (dof_id_type old_id, dof_id_type new_id) override;
   virtual Elem * add_elem (Elem * e) override;
+  virtual Elem * add_elem (std::unique_ptr<Elem> e) override;
   virtual Elem * insert_elem (Elem * e) override;
+  virtual Elem * insert_elem (std::unique_ptr<Elem> e) override;
   virtual void delete_elem (Elem * e) override;
   virtual void renumber_elem (dof_id_type old_id, dof_id_type new_id) override;
 
@@ -421,16 +436,28 @@ public:
   virtual element_iterator active_local_subdomain_elements_end (subdomain_id_type subdomain_id) override;
   virtual const_element_iterator active_local_subdomain_elements_begin (subdomain_id_type subdomain_id) const override;
   virtual const_element_iterator active_local_subdomain_elements_end (subdomain_id_type subdomain_id) const override;
+  virtual SimpleRange<element_iterator> active_local_subdomain_elements_ptr_range(subdomain_id_type subdomain_id) override
+  { return {active_local_subdomain_elements_begin(subdomain_id), active_local_subdomain_elements_end(subdomain_id)}; }
+  virtual SimpleRange<const_element_iterator> active_local_subdomain_elements_ptr_range(subdomain_id_type subdomain_id) const override
+  { return {active_local_subdomain_elements_begin(subdomain_id), active_local_subdomain_elements_end(subdomain_id)}; }
 
   virtual element_iterator active_subdomain_elements_begin (subdomain_id_type subdomain_id) override;
   virtual element_iterator active_subdomain_elements_end (subdomain_id_type subdomain_id) override;
   virtual const_element_iterator active_subdomain_elements_begin (subdomain_id_type subdomain_id) const override;
   virtual const_element_iterator active_subdomain_elements_end (subdomain_id_type subdomain_id) const override;
+  virtual SimpleRange<element_iterator> active_subdomain_elements_ptr_range(subdomain_id_type subdomain_id) override
+  { return {active_subdomain_elements_begin(subdomain_id), active_subdomain_elements_end(subdomain_id)}; }
+  virtual SimpleRange<const_element_iterator> active_subdomain_elements_ptr_range(subdomain_id_type subdomain_id) const override
+  { return {active_subdomain_elements_begin(subdomain_id), active_subdomain_elements_end(subdomain_id)}; }
 
   virtual element_iterator active_subdomain_set_elements_begin (std::set<subdomain_id_type> ss) override;
   virtual element_iterator active_subdomain_set_elements_end (std::set<subdomain_id_type> ss) override;
   virtual const_element_iterator active_subdomain_set_elements_begin (std::set<subdomain_id_type> ss) const override;
   virtual const_element_iterator active_subdomain_set_elements_end (std::set<subdomain_id_type> ss) const override;
+  virtual SimpleRange<element_iterator> active_subdomain_set_elements_ptr_range(std::set<subdomain_id_type> ss) override
+  { return {active_subdomain_set_elements_begin(ss), active_subdomain_set_elements_end(ss)}; }
+  virtual SimpleRange<const_element_iterator> active_subdomain_set_elements_ptr_range(std::set<subdomain_id_type> ss) const override
+  { return {active_subdomain_set_elements_begin(ss), active_subdomain_set_elements_end(ss)}; }
 
   virtual element_iterator ghost_elements_begin () override;
   virtual element_iterator ghost_elements_end () override;

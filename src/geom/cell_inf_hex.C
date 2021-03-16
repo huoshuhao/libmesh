@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -31,6 +31,7 @@
 #include "libmesh/face_inf_quad4.h"
 #include "libmesh/fe_type.h"
 #include "libmesh/fe_interface.h"
+#include "libmesh/inf_fe_map.h"
 #include "libmesh/enum_elem_quality.h"
 
 namespace libMesh
@@ -86,13 +87,24 @@ dof_id_type InfHex::key (const unsigned int s) const
 
 
 
-unsigned int InfHex::which_node_am_i(unsigned int side,
+unsigned int InfHex::local_side_node(unsigned int side,
                                      unsigned int side_node) const
 {
   libmesh_assert_less (side, this->n_sides());
-  libmesh_assert_less (side_node, 4);
+  libmesh_assert_less (side_node, InfHex8::nodes_per_side);
 
   return InfHex8::side_nodes_map[side][side_node];
+}
+
+
+
+unsigned int InfHex::local_edge_node(unsigned int edge,
+                                     unsigned int edge_node) const
+{
+  libmesh_assert_less (edge, this->n_edges());
+  libmesh_assert_less (edge_node, InfHex8::nodes_per_edge);
+
+  return InfHex8::edge_nodes_map[edge][edge_node];
 }
 
 
@@ -139,7 +151,7 @@ std::unique_ptr<Elem> InfHex::side_ptr (const unsigned int i)
     }
 
   // Set the nodes
-  for (unsigned n=0; n<face->n_nodes(); ++n)
+  for (auto n : face->node_index_range())
     face->set_node(n) = this->node_ptr(InfHex8::side_nodes_map[i][n]);
 
   return face;
@@ -210,11 +222,16 @@ bool InfHex::is_edge_on_side (const unsigned int e,
   libmesh_assert_less (e, this->n_edges());
   libmesh_assert_less (s, this->n_sides());
 
-  return (is_node_on_side(InfHex8::edge_nodes_map[e][0],s) &&
-          is_node_on_side(InfHex8::edge_nodes_map[e][1],s));
+  return (InfHex8::edge_sides_map[e][0] == s ||
+          InfHex8::edge_sides_map[e][1] == s);
 }
 
 
+
+std::vector<unsigned int> InfHex::sides_on_edge(const unsigned int e) const
+{
+  return {InfHex8::edge_sides_map[e][0], InfHex8::edge_sides_map[e][1]};
+}
 
 
 Real InfHex::quality (const ElemQuality q) const
@@ -449,7 +466,7 @@ bool InfHex::contains_point (const Point & p, Real tol) const
   // envelope may be non-spherical, the physical point may lie
   // inside the envelope, outside the envelope, or even inside
   // this infinite element.  Therefore if this fails,
-  // fall back to the FEInterface::inverse_map()
+  // fall back to the inverse_map()
   const Point my_origin (this->origin());
 
   // determine the minimal distance of the base from the origin
@@ -458,10 +475,18 @@ bool InfHex::contains_point (const Point & p, Real tol) const
   Point pt1_o(this->point(1) - my_origin);
   Point pt2_o(this->point(2) - my_origin);
   Point pt3_o(this->point(3) - my_origin);
-  const Real min_distance_sq = std::min(pt0_o.norm_sq(),
-                                        std::min(pt1_o.norm_sq(),
-                                                 std::min(pt2_o.norm_sq(),
-                                                          pt3_o.norm_sq())));
+  const Real tmp_min_distance_sq = std::min(pt0_o.norm_sq(),
+                                            std::min(pt1_o.norm_sq(),
+                                                     std::min(pt2_o.norm_sq(),
+                                                              pt3_o.norm_sq())));
+
+  // For a coarse grid, it is important to account for the fact
+  // that the sides are not spherical, thus the closest point
+  // can be closer than all edges.
+  // This is an estimator using Pythagoras:
+  const Real min_distance_sq = tmp_min_distance_sq
+                              - .5*std::max((point(0)-point(2)).norm_sq(),
+                                            (point(1)-point(3)).norm_sq());
 
   // work with 1% allowable deviation.  We can still fall
   // back to the InfFE::inverse_map()
@@ -503,12 +528,8 @@ bool InfHex::contains_point (const Point & p, Real tol) const
   // and something else (not important) in radial direction.
   FEType fe_type(default_order());
 
-  const Point mapped_point = FEInterface::inverse_map(dim(),
-                                                      fe_type,
-                                                      this,
-                                                      p,
-                                                      tol,
-                                                      false);
+  const Point mapped_point = InfFEMap::inverse_map(dim(), this, p,
+                                                   tol, false);
 
   return FEInterface::on_reference_element(mapped_point, this->type(), tol);
 }

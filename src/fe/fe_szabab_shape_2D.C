@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -15,22 +15,20 @@
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-
-
-// C++ includes
-#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
-#include <cmath> // for std::sqrt
-
-
 // Local includes
 #include "libmesh/libmesh_config.h"
 
 #ifdef LIBMESH_ENABLE_HIGHER_ORDER_SHAPES
 
+// libmesh includes
 #include "libmesh/fe.h"
 #include "libmesh/elem.h"
 #include "libmesh/utility.h"
+#include "libmesh/enum_to_string.h"
 
+// C++ includes
+#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
+#include <cmath> // for std::sqrt
 
 // Anonymous namespace to hold static std::sqrt values
 namespace
@@ -49,29 +47,22 @@ static const Real sqrt26 = std::sqrt(26.);
 namespace libMesh
 {
 
-template <>
-Real FE<2,SZABAB>::shape(const ElemType,
-                         const Order,
-                         const unsigned int,
-                         const Point &)
-{
-  libmesh_error_msg("Szabo-Babuska polynomials require the element type \nbecause edge orientation is needed.");
-  return 0.;
-}
 
+LIBMESH_DEFAULT_VECTORIZED_FE(2,SZABAB)
 
 
 template <>
 Real FE<2,SZABAB>::shape(const Elem * elem,
                          const Order order,
                          const unsigned int i,
-                         const Point & p)
+                         const Point & p,
+                         const bool add_p_level)
 {
   libmesh_assert(elem);
 
   const ElemType type = elem->type();
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder = static_cast<Order>(order + add_p_level * elem->p_level());
 
   // Declare that we are using our own special power function
   // from the Utility namespace.  This saves typing later.
@@ -133,7 +124,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -232,7 +223,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -334,7 +325,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -450,7 +441,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             } // case QUAD8/QUAD9
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
 
           } // switch type
 
@@ -575,7 +566,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             } // case QUAD8/QUAD9
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
 
           } // switch type
 
@@ -716,7 +707,7 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
             } // case QUAD8/QUAD9
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
 
           } // switch type
 
@@ -734,11 +725,10 @@ Real FE<2,SZABAB>::shape(const Elem * elem,
 
 
 template <>
-Real FE<2,SZABAB>::shape_deriv(const ElemType,
-                               const Order,
-                               const unsigned int,
-                               const unsigned int,
-                               const Point &)
+Real FE<2,SZABAB>::shape(const ElemType,
+                         const Order,
+                         const unsigned int,
+                         const Point &)
 {
   libmesh_error_msg("Szabo-Babuska polynomials require the element type \nbecause edge orientation is needed.");
   return 0.;
@@ -747,17 +737,32 @@ Real FE<2,SZABAB>::shape_deriv(const ElemType,
 
 
 template <>
+Real FE<2,SZABAB>::shape(const FEType fet,
+                         const Elem * elem,
+                         const unsigned int i,
+                         const Point & p,
+                         const bool add_p_level)
+{
+  return FE<2,SZABAB>::shape(elem, fet.order, i, p, add_p_level);
+}
+
+
+
+
+
+template <>
 Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
                                const Order order,
                                const unsigned int i,
                                const unsigned int j,
-                               const Point & p)
+                               const Point & p,
+                               const bool add_p_level)
 {
   libmesh_assert(elem);
 
   const ElemType type = elem->type();
 
-  const Order totalorder = static_cast<Order>(order + elem->p_level());
+  const Order totalorder = static_cast<Order>(order + add_p_level * elem->p_level());
 
   switch (totalorder)
     {
@@ -841,7 +846,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -945,7 +950,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -1052,7 +1057,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -1162,7 +1167,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -1270,7 +1275,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -1382,7 +1387,7 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
             }
 
           default:
-            libmesh_error_msg("Invalid element type = " << type);
+            libmesh_error_msg("Invalid element type = " << Utility::enum_to_string(type));
           }
       }
 
@@ -1393,6 +1398,35 @@ Real FE<2,SZABAB>::shape_deriv(const Elem * elem,
       libmesh_error_msg("ERROR: Unsupported polynomial order!");
     }
 }
+
+
+
+
+
+template <>
+Real FE<2,SZABAB>::shape_deriv(const ElemType,
+                               const Order,
+                               const unsigned int,
+                               const unsigned int,
+                               const Point &)
+{
+  libmesh_error_msg("Szabo-Babuska polynomials require the element type \nbecause edge orientation is needed.");
+  return 0.;
+}
+
+
+template <>
+Real FE<2,SZABAB>::shape_deriv(const FEType fet,
+                               const Elem * elem,
+                               const unsigned int i,
+                               const unsigned int j,
+                               const Point & p,
+                               const bool add_p_level)
+{
+  return FE<2,SZABAB>::shape_deriv(elem, fet.order, i, j, p, add_p_level);
+}
+
+
 
 
 #ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
@@ -1422,7 +1456,28 @@ Real FE<2,SZABAB>::shape_second_deriv(const Elem *,
                                       const Order,
                                       const unsigned int,
                                       const unsigned int,
-                                      const Point &)
+                                      const Point &,
+                                      const bool)
+{
+  static bool warning_given = false;
+
+  if (!warning_given)
+    libMesh::err << "Second derivatives for Szabab elements "
+                 << " are not yet implemented!"
+                 << std::endl;
+
+  warning_given = true;
+  return 0.;
+}
+
+
+template <>
+Real FE<2,SZABAB>::shape_second_deriv(const FEType,
+                                      const Elem *,
+                                      const unsigned int,
+                                      const unsigned int,
+                                      const Point &,
+                                      const bool)
 {
   static bool warning_given = false;
 

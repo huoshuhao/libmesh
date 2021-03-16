@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -25,6 +25,7 @@
 #define LIBMESH_DISTRIBUTED_VECTOR_H
 
 // Local includes
+#include "libmesh/int_range.h"
 #include "libmesh/numeric_vector.h"
 #include "libmesh/parallel.h"
 
@@ -166,6 +167,8 @@ public:
 
   virtual NumericVector<T> & operator -= (const NumericVector<T> & v) override;
 
+  virtual NumericVector<T> & operator *= (const NumericVector<T> & v) override;
+
   virtual NumericVector<T> & operator /= (const NumericVector<T> & v) override;
 
   virtual void reciprocal() override;
@@ -223,6 +226,8 @@ public:
                                const NumericVector<T> & vec2) override;
 
   virtual void swap (NumericVector<T> & v) override;
+
+  virtual std::size_t max_allowed_id() const override;
 
 private:
 
@@ -328,6 +333,9 @@ void DistributedVector<T>::init (const numeric_index_type n,
       else
         this->_type = PARALLEL;
     }
+  else if (ptype == GHOSTED &&
+           n == n_local) // We can support GHOSTED with no ghosts...
+    this->_type = SERIAL;
   else
     this->_type = ptype;
 
@@ -355,7 +363,7 @@ void DistributedVector<T>::init (const numeric_index_type n,
 
   // _first_local_index is the sum of _local_size
   // for all processor ids less than ours
-  for (processor_id_type p=0; p!=this->processor_id(); p++)
+  for (auto p : make_range(this->processor_id()))
     _first_local_index += local_sizes[p];
 
 
@@ -364,7 +372,7 @@ void DistributedVector<T>::init (const numeric_index_type n,
   // size, otherwise there is big trouble!
   numeric_index_type dbg_sum=0;
 
-  for (processor_id_type p=0; p!=this->n_processors(); p++)
+  for (auto p : make_range(this->n_processors()))
     dbg_sum += local_sizes[p];
 
   libmesh_assert_equal_to (dbg_sum, n);
@@ -374,8 +382,7 @@ void DistributedVector<T>::init (const numeric_index_type n,
 #else
 
   // No other options without MPI!
-  if (n != n_local)
-    libmesh_error_msg("ERROR:  MPI is required for n != n_local!");
+  libmesh_error_msg_if(n != n_local, "ERROR:  MPI is required for n != n_local!");
 
 #endif
 
@@ -570,7 +577,11 @@ void DistributedVector<T>::set (const numeric_index_type i, const T value)
   libmesh_assert_less (i-first_local_index(), local_size());
 
   _values[i - _first_local_index] = value;
+
+
+  this->_is_closed = false;
 }
+
 
 
 
@@ -585,6 +596,9 @@ void DistributedVector<T>::add (const numeric_index_type i, const T value)
   libmesh_assert_less (i-first_local_index(), local_size());
 
   _values[i - _first_local_index] += value;
+
+
+  this->_is_closed = false;
 }
 
 
@@ -600,10 +614,9 @@ Real DistributedVector<T>::min () const
   libmesh_assert_equal_to (_values.size(), _local_size);
   libmesh_assert_equal_to ((_last_local_index - _first_local_index), _local_size);
 
-  Real local_min = _values.size() ?
-    libmesh_real(_values[0]) : std::numeric_limits<Real>::max();
-  for (numeric_index_type i = 1; i < _values.size(); ++i)
-    local_min = std::min(libmesh_real(_values[i]), local_min);
+  Real local_min = std::numeric_limits<Real>::max();
+  for (auto v : _values)
+    local_min = std::min(libmesh_real(v), local_min);
 
   this->comm().min(local_min);
 
@@ -623,10 +636,9 @@ Real DistributedVector<T>::max() const
   libmesh_assert_equal_to (_values.size(), _local_size);
   libmesh_assert_equal_to ((_last_local_index - _first_local_index), _local_size);
 
-  Real local_max = _values.size() ?
-    libmesh_real(_values[0]) : -std::numeric_limits<Real>::max();
-  for (numeric_index_type i = 1; i < _values.size(); ++i)
-    local_max = std::max(libmesh_real(_values[i]), local_max);
+  Real local_max = -std::numeric_limits<Real>::max();
+  for (auto v : _values)
+    local_max = std::max(libmesh_real(v), local_max);
 
   this->comm().max(local_max);
 
@@ -647,6 +659,14 @@ void DistributedVector<T>::swap (NumericVector<T> & other)
 
   // This should be O(1) with any reasonable STL implementation
   std::swap(_values, v._values);
+}
+
+template <typename T>
+inline
+std::size_t DistributedVector<T>::max_allowed_id () const
+{
+  // Uses a std:vector<T>, so our indexing matches that
+  return std::numeric_limits<typename std::vector<T>::size_type>::max();
 }
 
 } // namespace libMesh

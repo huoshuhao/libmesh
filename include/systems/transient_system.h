@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -59,16 +59,23 @@ class TransientSystem : public Base
 public:
 
   /**
-   * Constructor.  Initializes required
-   * data structures.
+   * Constructor.
    */
   TransientSystem (EquationSystems & es,
                    const std::string & name,
                    const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions as the union of its
+   *   potential base classes (currently LinearImplicitSystem,
+   *   NonlinearImplicitSystem, ExplicitSystem, and System).
+   * - Destructor is defaulted out-of-line.
    */
+  TransientSystem (const TransientSystem &) = delete;
+  TransientSystem & operator= (const TransientSystem &) = delete;
+  TransientSystem (TransientSystem &&) = default;
+  TransientSystem & operator= (TransientSystem &&) = delete;
   virtual ~TransientSystem ();
 
   /**
@@ -116,7 +123,7 @@ public:
    * current solution with any ghost values needed from
    * other processors.
    */
-  std::unique_ptr<NumericVector<Number>> old_local_solution;
+  NumericVector<Number> * old_local_solution;
 
   /**
    * All the values I need to compute my contribution
@@ -124,8 +131,7 @@ public:
    * current solution with any ghost values needed from
    * other processors.
    */
-  std::unique_ptr<NumericVector<Number>> older_local_solution;
-
+  NumericVector<Number> * older_local_solution;
 
 protected:
 

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -47,8 +47,7 @@ int main (int argc, char ** argv)
 {
   LibMeshInit init(argc, argv);
 
-  if (argc < 4)
-    libmesh_error_msg("Usage: ./prog -d DIM filename");
+  libmesh_error_msg_if(argc < 4, "Usage: ./prog -d DIM filename");
 
   // Variables to get us started
   const unsigned char dim = cast_int<unsigned char>(atoi(argv[2]));
@@ -172,6 +171,8 @@ void assemble(EquationSystems & es,
 
   Real vol=0., area=0.;
 
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
+
   for (const auto & elem : mesh.active_local_element_ptr_range())
     {
       // recompute the element-specific data for the current element
@@ -248,8 +249,8 @@ void assemble(EquationSystems & es,
       system.rhs->add_vector(Fu, dof_indices_U);
       system.rhs->add_vector(Fv, dof_indices_V);
 
-      system.matrix->add_matrix(Kuu, dof_indices_U);
-      system.matrix->add_matrix(Kvv, dof_indices_V);
+      matrix.add_matrix(Kuu, dof_indices_U);
+      matrix.add_matrix(Kvv, dof_indices_V);
     }
 
   libMesh::out << "Vol="  << vol << std::endl;

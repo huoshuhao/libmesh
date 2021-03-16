@@ -20,10 +20,9 @@
 // C++ includes
 #include <sstream>
 
-// rbOOmit includes
+// libmesh includes
 #include "libmesh/rb_parameters.h"
-
-
+#include "libmesh/utility.h"
 
 namespace libMesh
 {
@@ -39,16 +38,20 @@ void RBParameters::clear()
   _extra_parameters.clear();
 }
 
+const std::map<std::string, Real> & RBParameters::get_parameters_map() const
+{
+  return _parameters;
+}
+
+const std::map<std::string, Real> & RBParameters::get_extra_parameters_map() const
+{
+  return _extra_parameters;
+}
+
 Real RBParameters::get_value(const std::string & param_name) const
 {
-  // find the parameter value
-  const_iterator it = _parameters.find(param_name);
-
-  // throw and error if the parameter doesn't exist
-  if (it == _parameters.end())
-    libmesh_error_msg("Error: parameter " << param_name << " does not exist in RBParameters object.");
-
-  return it->second;
+  // find the parameter value, throwing an error if it doesn't exist.
+  return libmesh_map_find(_parameters, param_name);
 }
 
 void RBParameters::set_value(const std::string & param_name, Real value)
@@ -58,14 +61,8 @@ void RBParameters::set_value(const std::string & param_name, Real value)
 
 Real RBParameters::get_extra_value(const std::string & param_name) const
 {
-  // find the parameter value
-  const_iterator it = _extra_parameters.find(param_name);
-
-  // throw and error if the parameter doesn't exist
-  if (it == _extra_parameters.end())
-    libmesh_error_msg("Error: parameter " << param_name << " does not exist in extra parameters.");
-
-  return it->second;
+  // find the parameter value, throwing an error if it doesn't exist.
+  return libmesh_map_find(_extra_parameters, param_name);
 }
 
 void RBParameters::set_extra_value(const std::string & param_name, Real value)
@@ -81,22 +78,30 @@ unsigned int RBParameters::n_parameters() const
 
 void RBParameters::get_parameter_names(std::set<std::string> & param_names) const
 {
-  param_names.clear();
+  libmesh_deprecated();
 
-  const_iterator it     = _parameters.begin();
-  const_iterator it_end = _parameters.end();
-  for ( ; it != it_end; ++it)
-    {
-      param_names.insert( it->first );
-    }
+  param_names.clear();
+  for (const auto & pr : _parameters)
+    param_names.insert(pr.first);
 }
 
 void RBParameters::get_extra_parameter_names(std::set<std::string> & param_names) const
 {
-  param_names.clear();
+  libmesh_deprecated();
 
+  param_names.clear();
   for (const auto & pr : _extra_parameters)
     param_names.insert(pr.first);
+}
+
+void RBParameters::erase_parameter(const std::string & param_name)
+{
+  _parameters.erase(param_name);
+}
+
+void RBParameters::erase_extra_parameter(const std::string & param_name)
+{
+  _extra_parameters.erase(param_name);
 }
 
 RBParameters::const_iterator RBParameters::begin() const
@@ -107,6 +112,16 @@ RBParameters::const_iterator RBParameters::begin() const
 RBParameters::const_iterator RBParameters::end() const
 {
   return _parameters.end();
+}
+
+RBParameters::const_iterator RBParameters::extra_begin() const
+{
+  return _extra_parameters.begin();
+}
+
+RBParameters::const_iterator RBParameters::extra_end() const
+{
+  return _extra_parameters.end();
 }
 
 bool RBParameters::operator==(const RBParameters & rhs) const

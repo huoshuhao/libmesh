@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -16,13 +16,7 @@
 // Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
-// C++ includes
-#include <algorithm> // for std::fill
-#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
-#include <cmath>     // for std::sqrt std::pow std::abs
-
-
-// Local Includes
+// libmesh includes
 #include "libmesh/dense_matrix.h"
 #include "libmesh/dense_vector.h"
 #include "libmesh/dof_map.h"
@@ -41,6 +35,12 @@
 #include "libmesh/enum_error_estimator_type.h"
 #include "libmesh/enum_order.h"
 #include "libmesh/enum_norm_type.h"
+#include "libmesh/enum_to_string.h"
+
+// C++ includes
+#include <algorithm> // for std::fill
+#include <cstdlib> // *must* precede <cmath> for proper std:abs() on PGI, Sun Studio CC
+#include <cmath>     // for std::sqrt std::pow std::abs
 
 namespace libMesh
 {
@@ -353,8 +353,9 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
                   const unsigned int psi_size = cast_int<unsigned int>(psi.size());
 
                   // Patch matrix contribution
-                  for (unsigned int i=0; i<Kp.m(); i++)
-                    for (unsigned int j=0; j<Kp.n(); j++)
+                  const unsigned int m = Kp.m(), n = Kp.n();
+                  for (unsigned int i=0; i<m; i++)
+                    for (unsigned int j=0; j<n; j++)
                       Kp(i,j) += JxW[qp]*psi[i]*psi[j];
 
                   if (error_estimator.error_norm.type(var) == L2 ||
@@ -415,6 +416,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
                           Fx(i) += JxW[qp]*grad_u_h(0)*psi[i];
                         }
                     }
+#if LIBMESH_DIM > 1
                   else if (error_estimator.error_norm.type(var) == H1_Y_SEMINORM)
                     {
                       // Compute the gradient on the current patch element
@@ -433,6 +435,8 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
                           Fy(i) += JxW[qp]*grad_u_h(1)*psi[i];
                         }
                     }
+#endif // LIBMESH_DIM > 1
+#if LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H1_Z_SEMINORM)
                     {
                       // Compute the gradient on the current patch element
@@ -451,6 +455,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
                           Fz(i) += JxW[qp]*grad_u_h(2)*psi[i];
                         }
                     }
+#endif // LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H2_SEMINORM ||
                            error_estimator.error_norm.type(var) == W2_INF_SEMINORM)
                     {
@@ -484,7 +489,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
 #endif
                     }
                   else
-                    libmesh_error_msg("Unsupported error norm type!");
+                    libmesh_error_msg("Unsupported error norm type == " << Utility::enum_to_string(error_estimator.error_norm.type(var)));
                 } // end quadrature loop
             } // end patch loop
 
@@ -701,6 +706,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
 
                       temperr[0] -= grad_u_h(0);
                     }
+#if LIBMESH_DIM > 1
                   else if (error_estimator.error_norm.type(var) == H1_Y_SEMINORM)
                     {
                       // Compute the gradient at the current sample point
@@ -719,6 +725,8 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
 
                       temperr[1] -= grad_u_h(1);
                     }
+#endif // LIBMESH_DIM > 1
+#if LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H1_Z_SEMINORM)
                     {
                       // Compute the gradient at the current sample point
@@ -737,6 +745,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
 
                       temperr[2] -= grad_u_h(2);
                     }
+#endif // LIBMESH_DIM > 2
                   else if (error_estimator.error_norm.type(var) == H2_SEMINORM ||
                            error_estimator.error_norm.type(var) == W2_INF_SEMINORM)
                     {
@@ -828,7 +837,7 @@ void WeightedPatchRecoveryErrorEstimator::EstimateError::operator()(const ConstE
                        error_estimator.error_norm.type(var) == H2_SEMINORM)
                 new_error_per_cell[e] += error_estimator.error_norm.weight_sq(var) * element_error;
               else
-                libmesh_error_msg("Unsupported error norm type!");
+                libmesh_error_msg("Unsupported error norm type == " << Utility::enum_to_string(error_estimator.error_norm.type(var)));
             }  // End (re) loop over patch elements
 
         } // end variables loop

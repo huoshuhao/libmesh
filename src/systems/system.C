@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -17,10 +17,6 @@
 
 
 
-// C++ includes
-#include <sstream>   // for std::ostringstream
-
-
 // Local includes
 #include "libmesh/dof_map.h"
 #include "libmesh/equation_systems.h"
@@ -32,7 +28,8 @@
 #include "libmesh/point.h"              // For point_value
 #include "libmesh/point_locator_base.h" // For point_value
 #include "libmesh/qoi_set.h"
-#include "libmesh/string_to_enum.h"
+#include "libmesh/enum_to_string.h"
+#include "libmesh/sparse_matrix.h"
 #include "libmesh/system.h"
 #include "libmesh/system_norm.h"
 #include "libmesh/utility.h"
@@ -52,6 +49,9 @@
 #include "libmesh/tensor_tools.h"
 #include "libmesh/enum_norm_type.h"
 
+// C++ includes
+#include <sstream>   // for std::ostringstream
+
 namespace libMesh
 {
 
@@ -70,6 +70,7 @@ System::System (EquationSystems & es,
   current_local_solution            (NumericVector<Number>::build(this->comm())),
   time                              (0.),
   qoi                               (0),
+  qoi_error_estimates               (0),
   _init_system_function             (nullptr),
   _init_system_object               (nullptr),
   _assemble_system_function         (nullptr),
@@ -80,68 +81,28 @@ System::System (EquationSystems & es,
   _qoi_evaluate_object              (nullptr),
   _qoi_evaluate_derivative_function (nullptr),
   _qoi_evaluate_derivative_object   (nullptr),
-  _dof_map                          (new DofMap(number_in, es.get_mesh())),
+  _dof_map                          (libmesh_make_unique<DofMap>(number_in, es.get_mesh())),
   _equation_systems                 (es),
   _mesh                             (es.get_mesh()),
   _sys_name                         (name_in),
   _sys_number                       (number_in),
   _active                           (true),
+  _matrices_initialized             (false),
   _solution_projection              (true),
   _basic_system_only                (false),
   _is_initialized                   (false),
   _identify_variable_groups         (true),
   _additional_data_written          (false),
   adjoint_already_solved            (false),
-  _hide_output                      (false)
+  _hide_output                      (false),
+  project_with_constraints          (true)
 {
 }
 
-
-
-// No copy construction of System objects!
-System::System (const System & other) :
-  ReferenceCountedObject<System>(),
-  ParallelObject(other),
-  _equation_systems(other._equation_systems),
-  _mesh(other._mesh),
-  _sys_number(other._sys_number)
-{
-  libmesh_not_implemented();
-}
-
-
-
-System & System::operator= (const System &)
-{
-  libmesh_not_implemented();
-}
 
 
 System::~System ()
 {
-  // Null-out the function pointers.  Since this
-  // class is getting destructed it is pointless,
-  // but a good habit.
-  _init_system_function =
-    _assemble_system_function =
-    _constrain_system_function = nullptr;
-
-  _qoi_evaluate_function = nullptr;
-  _qoi_evaluate_derivative_function =  nullptr;
-
-  // nullptr-out user-provided objects.
-  _init_system_object             = nullptr;
-  _assemble_system_object         = nullptr;
-  _constrain_system_object        = nullptr;
-  _qoi_evaluate_object            = nullptr;
-  _qoi_evaluate_derivative_object = nullptr;
-
-  // Clear data
-  // Note: although clear() is virtual, C++ only calls
-  // the clear() of the base class in the destructor.
-  // Thus we add System namespace to make it clear.
-  System::clear ();
-
   libmesh_exceptionless_assert (!libMesh::closed());
 }
 
@@ -205,31 +166,21 @@ Number System::current_solution (const dof_id_type global_dof_number) const
 void System::clear ()
 {
   _variables.clear();
-
   _variable_numbers.clear();
-
   _dof_map->clear ();
-
   solution->clear ();
-
   current_local_solution->clear ();
 
   // clear any user-added vectors
-  {
-    for (auto & pr : _vectors)
-      {
-        pr.second->clear ();
-        delete pr.second;
-        pr.second = nullptr;
-      }
+  _vectors.clear();
+  _vector_projections.clear();
+  _vector_is_adjoint.clear();
+  _vector_types.clear();
+  _is_initialized = false;
 
-    _vectors.clear();
-    _vector_projections.clear();
-    _vector_is_adjoint.clear();
-    _vector_types.clear();
-    _is_initialized = false;
-  }
-
+  // clear any user-added matrices
+  _matrices.clear();
+  _matrices_initialized = false;
 }
 
 
@@ -264,11 +215,18 @@ void System::init_data ()
   MeshBase & mesh = this->get_mesh();
 
   // Add all variable groups to our underlying DofMap
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     _dof_map->add_variable_group(this->variable_group(vg));
 
   // Distribute the degrees of freedom on the mesh
-  _dof_map->distribute_dofs (mesh);
+  auto total_dofs = _dof_map->distribute_dofs (mesh);
+
+  // Throw an error if the total number of DOFs is not capable of
+  // being indexed by our solution vector.
+  auto max_allowed_id = solution->max_allowed_id();
+  libmesh_error_msg_if(total_dofs > max_allowed_id,
+                       "Cannot allocate a NumericVector with " << total_dofs << " degrees of freedom. "
+                       "The vector can only index up to " << max_allowed_id << " entries.");
 
   // Recreate any user or internal constraints
   this->reinit_constraints();
@@ -317,6 +275,67 @@ void System::init_data ()
           pr.second->init (this->n_dofs(), this->n_local_dofs(), false, type);
         }
     }
+
+  // Add matrices
+  this->add_matrices();
+
+  // Clear any existing matrices
+  for (auto & pr : _matrices)
+    pr.second->clear();
+
+  // Initialize the matrices for the system
+  if (!_basic_system_only)
+   this->init_matrices();
+}
+
+
+
+void System::init_matrices ()
+{
+  // No matrices to init
+  if (_matrices.empty())
+    {
+      // any future matrices to be added will need their own
+      // initialization
+      _matrices_initialized = true;
+
+      return;
+    }
+
+  // Check for quick return in case the first matrix
+  // (and by extension all the matrices) has already
+  // been initialized
+  if (_matrices.begin()->second->initialized())
+    {
+      libmesh_assert(_matrices_initialized);
+      return;
+    }
+
+  _matrices_initialized = true;
+
+  // Tell the matrices about the dof map, and vice versa
+  for (auto & pr : _matrices)
+    {
+      SparseMatrix<Number> & m = *(pr.second);
+      libmesh_assert (!m.initialized());
+
+      // We want to allow repeated init() on systems, but we don't
+      // want to attach the same matrix to the DofMap twice
+      if (!this->get_dof_map().is_attached(m))
+        this->get_dof_map().attach_matrix(m);
+    }
+
+  // Compute the sparsity pattern for the current
+  // mesh and DOF distribution.  This also updates
+  // additional matrices, \p DofMap now knows them
+  this->get_dof_map().compute_sparsity(this->get_mesh());
+
+  // Initialize matrices and set to zero
+  for (auto & pr : _matrices)
+    {
+      pr.second->init(_matrix_types[pr.first]);
+      pr.second->zero();
+    }
 }
 
 
@@ -327,7 +346,7 @@ void System::restrict_vectors ()
   // Restrict the _vectors on the coarsened cells
   for (auto & pr : _vectors)
     {
-      NumericVector<Number> * v = pr.second;
+      NumericVector<Number> * v = pr.second.get();
 
       if (_vector_projections[pr.first])
         {
@@ -391,6 +410,31 @@ void System::reinit ()
 {
   // project_vector handles vector initialization now
   libmesh_assert_equal_to (solution->size(), current_local_solution->size());
+
+  if (!_matrices.empty() && !_basic_system_only)
+    {
+      // Clear the matrices
+      for (auto & pr : _matrices)
+        {
+          pr.second->clear();
+          pr.second->attach_dof_map(this->get_dof_map());
+        }
+
+      // Clear the sparsity pattern
+      this->get_dof_map().clear_sparsity();
+
+      // Compute the sparsity pattern for the current
+      // mesh and DOF distribution.  This also updates
+      // additional matrices, \p DofMap now knows them
+      this->get_dof_map().compute_sparsity (this->get_mesh());
+
+      // Initialize matrices and set to zero
+      for (auto & pr : _matrices)
+        {
+          pr.second->init();
+          pr.second->zero();
+        }
+    }
 }
 
 
@@ -667,14 +711,13 @@ NumericVector<Number> & System::add_vector (const std::string & vec_name,
     return *(_vectors[vec_name]);
 
   // Otherwise build the vector
-  NumericVector<Number> * buf = NumericVector<Number>::build(this->comm()).release();
-  _vectors.insert (std::make_pair (vec_name, buf));
-  _vector_projections.insert (std::make_pair (vec_name, projections));
-
-  _vector_types.insert (std::make_pair (vec_name, type));
+  auto pr = _vectors.emplace(vec_name, NumericVector<Number>::build(this->comm()));
+  auto buf = pr.first->second.get();
+  _vector_projections.emplace(vec_name, projections);
+  _vector_types.emplace(vec_name, type);
 
   // Vectors are primal by default
-  _vector_is_adjoint.insert (std::make_pair (vec_name, -1));
+  _vector_is_adjoint.emplace(vec_name, -1);
 
   // Initialize it if necessary
   if (_is_initialized)
@@ -704,10 +747,7 @@ void System::remove_vector (const std::string & vec_name)
   if (pos == _vectors.end())
     return;
 
-  delete pos->second;
-
   _vectors.erase(pos);
-
   _vector_projections.erase(vec_name);
   _vector_is_adjoint.erase(vec_name);
   _vector_types.erase(vec_name);
@@ -720,7 +760,7 @@ const NumericVector<Number> * System::request_vector (const std::string & vec_na
   if (pos == _vectors.end())
     return nullptr;
 
-  return pos->second;
+  return pos->second.get();
 }
 
 
@@ -732,134 +772,195 @@ NumericVector<Number> * System::request_vector (const std::string & vec_name)
   if (pos == _vectors.end())
     return nullptr;
 
-  return pos->second;
+  return pos->second.get();
 }
 
 
 
 const NumericVector<Number> * System::request_vector (const unsigned int vec_num) const
 {
-  const_vectors_iterator v = vectors_begin();
-  const_vectors_iterator v_end = vectors_end();
-  unsigned int num = 0;
-  while ((num<vec_num) && (v!=v_end))
-    {
-      num++;
-      ++v;
-    }
-  if (v==v_end)
+  // If we don't have that many vectors, return nullptr
+  if (vec_num >= _vectors.size())
     return nullptr;
-  return v->second;
+
+  // Otherwise return a pointer to the vec_num'th vector
+  auto it = vectors_begin();
+  std::advance(it, vec_num);
+  return it->second.get();
 }
 
 
 
 NumericVector<Number> * System::request_vector (const unsigned int vec_num)
 {
-  vectors_iterator v = vectors_begin();
-  vectors_iterator v_end = vectors_end();
-  unsigned int num = 0;
-  while ((num<vec_num) && (v!=v_end))
-    {
-      num++;
-      ++v;
-    }
-  if (v==v_end)
+  // If we don't have that many vectors, return nullptr
+  if (vec_num >= _vectors.size())
     return nullptr;
-  return v->second;
+
+  // Otherwise return a pointer to the vec_num'th vector
+  auto it = vectors_begin();
+  std::advance(it, vec_num);
+  return it->second.get();
 }
 
 
 
 const NumericVector<Number> & System::get_vector (const std::string & vec_name) const
 {
-  // Make sure the vector exists
-  const_vectors_iterator pos = _vectors.find(vec_name);
-
-  if (pos == _vectors.end())
-    libmesh_error_msg("ERROR: vector " << vec_name << " does not exist in this system!");
-
-  return *(pos->second);
+  return *(libmesh_map_find(_vectors, vec_name));
 }
 
 
 
 NumericVector<Number> & System::get_vector (const std::string & vec_name)
 {
-  // Make sure the vector exists
-  vectors_iterator pos = _vectors.find(vec_name);
-
-  if (pos == _vectors.end())
-    libmesh_error_msg("ERROR: vector " << vec_name << " does not exist in this system!");
-
-  return *(pos->second);
+  return *(libmesh_map_find(_vectors, vec_name));
 }
 
 
 
 const NumericVector<Number> & System::get_vector (const unsigned int vec_num) const
 {
-  const_vectors_iterator v = vectors_begin();
-  const_vectors_iterator v_end = vectors_end();
-  unsigned int num = 0;
-  while ((num<vec_num) && (v!=v_end))
-    {
-      num++;
-      ++v;
-    }
-  libmesh_assert (v != v_end);
-  return *(v->second);
+  // If we don't have that many vectors, throw an error
+  libmesh_assert_less(vec_num, _vectors.size());
+
+  // Otherwise return a reference to the vec_num'th vector
+  auto it = vectors_begin();
+  std::advance(it, vec_num);
+  return *(it->second);
 }
 
 
 
 NumericVector<Number> & System::get_vector (const unsigned int vec_num)
 {
-  vectors_iterator v = vectors_begin();
-  vectors_iterator v_end = vectors_end();
-  unsigned int num = 0;
-  while ((num<vec_num) && (v!=v_end))
-    {
-      num++;
-      ++v;
-    }
-  libmesh_assert (v != v_end);
-  return *(v->second);
+  // If we don't have that many vectors, throw an error
+  libmesh_assert_less(vec_num, _vectors.size());
+
+  // Otherwise return a reference to the vec_num'th vector
+  auto it = vectors_begin();
+  std::advance(it, vec_num);
+  return *(it->second);
 }
 
 
 
 const std::string & System::vector_name (const unsigned int vec_num) const
 {
-  const_vectors_iterator v = vectors_begin();
-  const_vectors_iterator v_end = vectors_end();
-  unsigned int num = 0;
-  while ((num<vec_num) && (v!=v_end))
-    {
-      num++;
-      ++v;
-    }
-  libmesh_assert (v != v_end);
-  return v->first;
+  // If we don't have that many vectors, throw an error
+  libmesh_assert_less(vec_num, _vectors.size());
+
+  // Otherwise return a reference to the vec_num'th vector name
+  auto it = vectors_begin();
+  std::advance(it, vec_num);
+  return it->first;
 }
 
 const std::string & System::vector_name (const NumericVector<Number> & vec_reference) const
 {
-  const_vectors_iterator v = vectors_begin();
-  const_vectors_iterator v_end = vectors_end();
-
-  for (; v != v_end; ++v)
-    {
-      // Check if the current vector is the one whose name we want
-      if (&vec_reference == v->second)
-        break; // exit loop if it is
-    }
+  // Linear search for a vector whose pointer matches vec_reference
+  auto it = std::find_if(vectors_begin(), vectors_end(),
+                         [&vec_reference](const decltype(_vectors)::value_type & pr)
+                         { return &vec_reference == pr.second.get(); });
 
   // Before returning, make sure we didnt loop till the end and not find any match
-  libmesh_assert (v != v_end);
+  libmesh_assert (it != vectors_end());
 
   // Return the string associated with the current vector
-  return v->first;
+  return it->first;
+}
+
+
+
+SparseMatrix<Number> & System::add_matrix (const std::string & mat_name,
+                                           const ParallelType type,
+                                           const MatrixBuildType mat_build_type)
+{
+  // Return the matrix if it is already there.
+  if (this->have_matrix(mat_name))
+    return *(_matrices[mat_name]);
+
+  // Otherwise build the matrix to return.
+  auto pr = _matrices.emplace
+    (mat_name,
+     SparseMatrix<Number>::build(this->comm(),
+                                 libMesh::default_solver_package(),
+                                 mat_build_type));
+
+  _matrix_types.emplace(mat_name, type);
+
+  SparseMatrix<Number> & mat = *(pr.first->second);
+
+  // Initialize it first if we've already initialized the others.
+  this->late_matrix_init(mat, type);
+
+  return mat;
+}
+
+
+
+void System::late_matrix_init(SparseMatrix<Number> & mat,
+                              ParallelType type)
+{
+  if (_matrices_initialized)
+    {
+      this->get_dof_map().attach_matrix(mat);
+      mat.init(type);
+    }
+}
+
+
+
+
+void System::remove_matrix (const std::string & mat_name)
+{
+  matrices_iterator pos = _matrices.find(mat_name);
+
+  // Return if the matrix does not exist
+  if (pos == _matrices.end())
+    return;
+
+  _matrices.erase(pos); // erase()'d entries are destroyed
+}
+
+
+
+const SparseMatrix<Number> * System::request_matrix (const std::string & mat_name) const
+{
+  // Make sure the matrix exists
+  const_matrices_iterator pos = _matrices.find(mat_name);
+
+  if (pos == _matrices.end())
+    return nullptr;
+
+  return pos->second.get();
+}
+
+
+
+SparseMatrix<Number> * System::request_matrix (const std::string & mat_name)
+{
+  // Make sure the matrix exists
+  matrices_iterator pos = _matrices.find(mat_name);
+
+  if (pos == _matrices.end())
+    return nullptr;
+
+  return pos->second.get();
+}
+
+
+
+const SparseMatrix<Number> & System::get_matrix (const std::string & mat_name) const
+{
+  return *libmesh_map_find(_matrices, mat_name);
+}
+
+
+
+SparseMatrix<Number> & System::get_matrix (const std::string & mat_name)
+{
+  return *libmesh_map_find(_matrices, mat_name);
 }
 
 
@@ -1086,7 +1187,7 @@ unsigned int System::add_variable (const std::string & var,
 
   // Make sure the variable isn't there already
   // or if it is, that it's the type we want
-  for (unsigned int v=0; v<this->n_vars(); v++)
+  for (auto v : make_range(this->n_vars()))
     if (this->variable_name(v) == var)
       {
         if (this->variable_type(v) == type)
@@ -1121,11 +1222,12 @@ unsigned int System::add_variable (const std::string & var,
         should_be_in_vg = false;
 
       // they are restricted, we aren't?
-      if (their_active_subdomains && !active_subdomains)
+      if (their_active_subdomains &&
+          (!active_subdomains || (active_subdomains && active_subdomains->empty())))
         should_be_in_vg = false;
 
       // they aren't restricted, we are?
-      if (!their_active_subdomains && active_subdomains)
+      if (!their_active_subdomains && (active_subdomains && !active_subdomains->empty()))
         should_be_in_vg = false;
 
       if (their_active_subdomains && active_subdomains)
@@ -1176,22 +1278,81 @@ unsigned int System::add_variables (const std::vector<std::string> & vars,
 
   // Make sure the variable isn't there already
   // or if it is, that it's the type we want
-  for (std::size_t ov=0; ov<vars.size(); ov++)
-    for (unsigned int v=0; v<this->n_vars(); v++)
-      if (this->variable_name(v) == vars[ov])
+  for (auto ovar : vars)
+    for (auto v : make_range(this->n_vars()))
+      if (this->variable_name(v) == ovar)
         {
           if (this->variable_type(v) == type)
             return _variables[v].number();
 
-          libmesh_error_msg("ERROR: incompatible variable " << vars[ov] << " has already been added for this system!");
+          libmesh_error_msg("ERROR: incompatible variable " << ovar << " has already been added for this system!");
         }
+
+  // Optimize for VariableGroups here - if the user is adding multiple
+  // variables of the same FEType and subdomain restriction, catch
+  // that here and add them as members of the same VariableGroup.
+  //
+  // start by setting this flag to whatever the user has requested
+  // and then consider the conditions which should negate it.
+  bool should_be_in_vg = this->identify_variable_groups();
+
+  // No variable groups, nothing to add to
+  if (!this->n_variable_groups())
+    should_be_in_vg = false;
+  else
+    {
+      VariableGroup & vg(_variable_groups.back());
+
+      // get a pointer to their subdomain restriction, if any.
+      const std::set<subdomain_id_type> * const
+        their_active_subdomains (vg.implicitly_active() ?
+                                 nullptr : &vg.active_subdomains());
+
+      // Different types?
+      if (vg.type() != type)
+        should_be_in_vg = false;
+
+      // they are restricted, we aren't?
+      if (their_active_subdomains &&
+          (!active_subdomains || (active_subdomains && active_subdomains->empty())))
+        should_be_in_vg = false;
+
+      // they aren't restricted, we are?
+      if (!their_active_subdomains && (active_subdomains && !active_subdomains->empty()))
+        should_be_in_vg = false;
+
+      if (their_active_subdomains && active_subdomains)
+        // restricted to different sets?
+        if (*their_active_subdomains != *active_subdomains)
+          should_be_in_vg = false;
+
+      // If after all that none of the conditions were violated,
+      // append the variables to the vg and we're done
+      if (should_be_in_vg)
+        {
+          unsigned short curr_n_vars = cast_int<unsigned short>
+            (this->n_vars());
+
+          for (auto ovar : vars)
+            {
+              curr_n_vars = cast_int<unsigned short> (this->n_vars());
+
+              vg.append (ovar);
+
+              _variables.push_back(vg(vg.n_variables()-1));
+              _variable_numbers[ovar] = curr_n_vars;
+            }
+          return curr_n_vars;
+        }
+    }
 
   const unsigned short curr_n_vars = cast_int<unsigned short>
     (this->n_vars());
 
   const unsigned int next_first_component = this->n_components();
 
-  // Add the variable group to the list
+  // We weren't able to add to an existing variable group, so
+  // add a new variable group to the list
   _variable_groups.push_back((active_subdomains == nullptr) ?
                              VariableGroup(this, vars, curr_n_vars,
                                            next_first_component, type) :
@@ -1201,7 +1362,7 @@ unsigned int System::add_variables (const std::vector<std::string> & vars,
   const VariableGroup & vg (_variable_groups.back());
 
   // Add each component of the group individually
-  for (auto v : IntRange<unsigned int>(0, vars.size()))
+  for (auto v : make_range(vars.size()))
     {
       _variables.push_back (vg(v));
       _variable_numbers[vars[v]] = cast_int<unsigned short>
@@ -1242,16 +1403,9 @@ bool System::has_variable (const std::string & var) const
 
 unsigned short int System::variable_number (const std::string & var) const
 {
-  // Make sure the variable exists
-  std::map<std::string, unsigned short int>::const_iterator
-    pos = _variable_numbers.find(var);
-
-  if (pos == _variable_numbers.end())
-    libmesh_error_msg("ERROR: variable " << var << " does not exist in this system!");
-
-  libmesh_assert_equal_to (_variables[pos->second].name(), var);
-
-  return pos->second;
+  auto var_num = libmesh_map_find(_variable_numbers, var);
+  libmesh_assert_equal_to (_variables[var_num].name(), var);
+  return var_num;
 }
 
 
@@ -1291,14 +1445,10 @@ void System::local_dof_indices(const unsigned int var,
     {
       this->get_dof_map().dof_indices (elem, dof_indices, var);
 
-      for (std::size_t i=0; i<dof_indices.size(); i++)
-        {
-          dof_id_type dof = dof_indices[i];
-
-          //If the dof is owned by the local processor
-          if (first_local <= dof && dof < end_local)
-            var_indices.insert(dof_indices[i]);
-        }
+      for (dof_id_type dof : dof_indices)
+        //If the dof is owned by the local processor
+        if (first_local <= dof && dof < end_local)
+          var_indices.insert(dof);
     }
 
   // we may have missed assigning DOFs to nodes that we own
@@ -1370,7 +1520,7 @@ Real System::discrete_var_norm(const NumericVector<Number> & v,
   if (norm_type == DISCRETE_L_INF)
     return v.subset_linfty_norm(var_indices);
   else
-    libmesh_error_msg("Invalid norm_type = " << norm_type);
+    libmesh_error_msg("Invalid norm_type = " << Utility::enum_to_string(norm_type));
 }
 
 
@@ -1413,8 +1563,8 @@ Real System::calculate_norm(const NumericVector<Number> & v,
     {
       //Check to see if all weights are 1.0 and all types are equal
       FEMNormType norm_type0 = norm.type(0);
-      unsigned int check_var = 0;
-      for (; check_var != this->n_vars(); ++check_var)
+      unsigned int check_var = 0, check_end = this->n_vars();
+      for (; check_var != check_end; ++check_var)
         if ((norm.weight(check_var) != 1.0) || (norm.type(check_var) != norm_type0))
           break;
 
@@ -1428,10 +1578,10 @@ Real System::calculate_norm(const NumericVector<Number> & v,
           if (norm_type0 == DISCRETE_L_INF)
             return v.linfty_norm();
           else
-            libmesh_error_msg("Invalid norm_type0 = " << norm_type0);
+            libmesh_error_msg("Invalid norm_type0 = " << Utility::enum_to_string(norm_type0));
         }
 
-      for (unsigned int var=0; var != this->n_vars(); ++var)
+      for (auto var : make_range(this->n_vars()))
         {
           // Skip any variables we don't need to integrate
           if (norm.weight(var) == 0.0)
@@ -1445,7 +1595,8 @@ Real System::calculate_norm(const NumericVector<Number> & v,
 
   // Localize the potentially parallel vector
   std::unique_ptr<NumericVector<Number>> local_v = NumericVector<Number>::build(this->comm());
-  local_v->init(v.size(), true, SERIAL);
+  local_v->init(v.size(), v.local_size(), _dof_map->get_send_list(),
+                true, GHOSTED);
   v.localize (*local_v, _dof_map->get_send_list());
 
   // I'm not sure how best to mix Hilbert norms on some variables (for
@@ -1456,7 +1607,7 @@ Real System::calculate_norm(const NumericVector<Number> & v,
     using_nonhilbert_norm = true;
 
   // Loop over all variables
-  for (unsigned int var=0; var != this->n_vars(); ++var)
+  for (auto var : make_range(this->n_vars()))
     {
       // Skip any variables we don't need to integrate
       Real norm_weight_sq = norm.weight_sq(var);
@@ -1666,12 +1817,12 @@ std::string System::get_info() const
       << "    Type \""  << this->system_type() << "\"\n"
       << "    Variables=";
 
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     {
       const VariableGroup & vg_description (this->variable_group(vg));
 
       if (vg_description.n_variables() > 1) oss << "{ ";
-      for (unsigned int vn=0; vn<vg_description.n_variables(); vn++)
+      for (auto vn : make_range(vg_description.n_variables()))
         oss << "\"" << vg_description.name(vn) << "\" ";
       if (vg_description.n_variables() > 1) oss << "} ";
     }
@@ -1680,12 +1831,12 @@ std::string System::get_info() const
 
   oss << "    Finite Element Types=";
 #ifndef LIBMESH_ENABLE_INFINITE_ELEMENTS
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     oss << "\""
         << Utility::enum_to_string<FEFamily>(this->get_dof_map().variable_group(vg).type().family)
         << "\" ";
 #else
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     {
       oss << "\""
           << Utility::enum_to_string<FEFamily>(this->get_dof_map().variable_group(vg).type().family)
@@ -1695,7 +1846,7 @@ std::string System::get_info() const
     }
 
   oss << '\n' << "    Infinite Element Mapping=";
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     oss << "\""
         << Utility::enum_to_string<InfMapType>(this->get_dof_map().variable_group(vg).type().inf_map)
         << "\" ";
@@ -1704,7 +1855,7 @@ std::string System::get_info() const
   oss << '\n';
 
   oss << "    Approximation Orders=";
-  for (unsigned int vg=0; vg<this->n_variable_groups(); vg++)
+  for (auto vg : make_range(this->n_variable_groups()))
     {
 #ifndef LIBMESH_ENABLE_INFINITE_ELEMENTS
       oss << "\""
@@ -1746,9 +1897,7 @@ void System::attach_init_function (void fptr(EquationSystems & es,
 
   if (_init_system_object != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both initialization function and object!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both initialization function and object!");
 
       _init_system_object = nullptr;
     }
@@ -1762,9 +1911,7 @@ void System::attach_init_object (System::Initialization & init_in)
 {
   if (_init_system_function != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both initialization object and function!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both initialization object and function!");
 
       _init_system_function = nullptr;
     }
@@ -1781,9 +1928,7 @@ void System::attach_assemble_function (void fptr(EquationSystems & es,
 
   if (_assemble_system_object != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both assembly function and object!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both assembly function and object!");
 
       _assemble_system_object = nullptr;
     }
@@ -1797,9 +1942,7 @@ void System::attach_assemble_object (System::Assembly & assemble_in)
 {
   if (_assemble_system_function != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both assembly object and function!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both assembly object and function!");
 
       _assemble_system_function = nullptr;
     }
@@ -1816,9 +1959,7 @@ void System::attach_constraint_function(void fptr(EquationSystems & es,
 
   if (_constrain_system_object != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both constraint function and object!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both constraint function and object!");
 
       _constrain_system_object = nullptr;
     }
@@ -1832,9 +1973,7 @@ void System::attach_constraint_object (System::Constraint & constrain)
 {
   if (_constrain_system_function != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both constraint object and function!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both constraint object and function!");
 
       _constrain_system_function = nullptr;
     }
@@ -1852,9 +1991,7 @@ void System::attach_QOI_function(void fptr(EquationSystems &,
 
   if (_qoi_evaluate_object != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both QOI function and object!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both QOI function and object!");
 
       _qoi_evaluate_object = nullptr;
     }
@@ -1868,9 +2005,7 @@ void System::attach_QOI_object (QOI & qoi_in)
 {
   if (_qoi_evaluate_function != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both QOI object and function!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both QOI object and function!");
 
       _qoi_evaluate_function = nullptr;
     }
@@ -1887,9 +2022,7 @@ void System::attach_QOI_derivative(void fptr(EquationSystems &, const std::strin
 
   if (_qoi_evaluate_derivative_object != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both QOI derivative function and object!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both QOI derivative function and object!");
 
       _qoi_evaluate_derivative_object = nullptr;
     }
@@ -1903,9 +2036,7 @@ void System::attach_QOI_derivative_object (QOIDerivative & qoi_derivative)
 {
   if (_qoi_evaluate_derivative_function != nullptr)
     {
-      libmesh_here();
-      libMesh::out << "WARNING:  Cannot specify both QOI derivative object and function!"
-                   << std::endl;
+      libmesh_warning("WARNING:  Cannot specify both QOI derivative object and function!");
 
       _qoi_evaluate_derivative_function = nullptr;
     }
@@ -1990,7 +2121,10 @@ void System::user_QOI_derivative(const QoISet & qoi_indices,
 
 
 
-Number System::point_value(unsigned int var, const Point & p, const bool insist_on_success) const
+Number System::point_value(unsigned int var,
+                           const Point & p,
+                           const bool insist_on_success,
+                           const NumericVector<Number> *sol) const
 {
   // This function must be called on every processor; there's no
   // telling where in the partition p falls.
@@ -2018,13 +2152,18 @@ Number System::point_value(unsigned int var, const Point & p, const bool insist_
   if (!insist_on_success || !mesh.is_serial())
     locator.enable_out_of_mesh_mode();
 
-  // Get a pointer to the element that contains P
-  const Elem * e = locator(p);
+  // Get a pointer to an element that contains p and allows us to
+  // evaluate var
+  const std::set<subdomain_id_type> & raw_subdomains =
+    this->variable(var).active_subdomains();
+  const std::set<subdomain_id_type> * implicit_subdomains =
+    raw_subdomains.empty() ? nullptr : &raw_subdomains;
+  const Elem * e = locator(p, implicit_subdomains);
 
   Number u = 0;
 
   if (e && this->get_dof_map().is_evaluable(*e, var))
-    u = point_value(var, p, *e);
+    u = point_value(var, p, *e, sol);
 
   // If I have an element containing p, then let's let everyone know
   processor_id_type lowest_owner =
@@ -2043,12 +2182,18 @@ Number System::point_value(unsigned int var, const Point & p, const bool insist_
   return u;
 }
 
-Number System::point_value(unsigned int var, const Point & p, const Elem & e) const
+Number System::point_value(unsigned int var,
+                           const Point & p,
+                           const Elem & e,
+                           const NumericVector<Number> *sol) const
 {
   // Ensuring that the given point is really in the element is an
   // expensive assert, but as long as debugging is turned on we might
   // as well try to catch a particularly nasty potential error
   libmesh_assert (e.contains_point(p));
+
+  if (!sol)
+    sol = this->current_local_solution.get();
 
   // Get the dof map to get the proper indices for our computation
   const DofMap & dof_map = this->get_dof_map();
@@ -2068,8 +2213,8 @@ Number System::point_value(unsigned int var, const Point & p, const Elem & e) co
 
   FEType fe_type = dof_map.variable_type(var);
 
-  // Map the physical co-ordinates to the master co-ordinates using the inverse_map from fe_interface.h.
-  Point coor = FEInterface::inverse_map(e.dim(), fe_type, &e, p);
+  // Map the physical co-ordinates to the master co-ordinates
+  Point coor = FEMap::inverse_map(e.dim(), &e, p);
 
   // get the shape function value via the FEInterface to also handle the case
   // of infinite elements correcly, the shape function is not fe->phi().
@@ -2081,7 +2226,7 @@ Number System::point_value(unsigned int var, const Point & p, const Elem & e) co
 
   for (unsigned int l=0; l<num_dofs; l++)
     {
-      u += fe_data.shape[l]*this->current_solution (dof_indices[l]);
+      u += fe_data.shape[l] * (*sol)(dof_indices[l]);
     }
 
   return u;
@@ -2097,7 +2242,18 @@ Number System::point_value(unsigned int var, const Point & p, const Elem * e) co
 
 
 
-Gradient System::point_gradient(unsigned int var, const Point & p, const bool insist_on_success) const
+Number System::point_value(unsigned int var, const Point & p, const NumericVector<Number> * sol) const
+{
+  return this->point_value(var, p, true, sol);
+}
+
+
+
+
+Gradient System::point_gradient(unsigned int var,
+                                const Point & p,
+                                const bool insist_on_success,
+                                const NumericVector<Number> *sol) const
 {
   // This function must be called on every processor; there's no
   // telling where in the partition p falls.
@@ -2125,13 +2281,18 @@ Gradient System::point_gradient(unsigned int var, const Point & p, const bool in
   if (!insist_on_success || !mesh.is_serial())
     locator.enable_out_of_mesh_mode();
 
-  // Get a pointer to the element that contains P
-  const Elem * e = locator(p);
+  // Get a pointer to an element that contains p and allows us to
+  // evaluate var
+  const std::set<subdomain_id_type> & raw_subdomains =
+    this->variable(var).active_subdomains();
+  const std::set<subdomain_id_type> * implicit_subdomains =
+    raw_subdomains.empty() ? nullptr : &raw_subdomains;
+  const Elem * e = locator(p, implicit_subdomains);
 
   Gradient grad_u;
 
   if (e && this->get_dof_map().is_evaluable(*e, var))
-    grad_u = point_gradient(var, p, *e);
+    grad_u = point_gradient(var, p, *e, sol);
 
   // If I have an element containing p, then let's let everyone know
   processor_id_type lowest_owner =
@@ -2151,12 +2312,18 @@ Gradient System::point_gradient(unsigned int var, const Point & p, const bool in
 }
 
 
-Gradient System::point_gradient(unsigned int var, const Point & p, const Elem & e) const
+Gradient System::point_gradient(unsigned int var,
+                                const Point & p,
+                                const Elem & e,
+                                const NumericVector<Number> *sol) const
 {
   // Ensuring that the given point is really in the element is an
   // expensive assert, but as long as debugging is turned on we might
   // as well try to catch a particularly nasty potential error
   libmesh_assert (e.contains_point(p));
+
+  if (!sol)
+    sol = this->current_local_solution.get();
 
   // Get the dof map to get the proper indices for our computation
   const DofMap & dof_map = this->get_dof_map();
@@ -2179,8 +2346,8 @@ Gradient System::point_gradient(unsigned int var, const Point & p, const Elem & 
 
   FEType fe_type = dof_map.variable_type(var);
 
-  // Map the physical co-ordinates to the master co-ordinates using the inverse_map from fe_interface.h.
-  Point coor = FEInterface::inverse_map(dim, fe_type, &e, p);
+  // Map the physical co-ordinates to the master co-ordinates
+  Point coor = FEMap::inverse_map(dim, &e, p);
 
   // get the shape function value via the FEInterface to also handle the case
   // of infinite elements correcly, the shape function is not fe->phi().
@@ -2201,7 +2368,7 @@ Gradient System::point_gradient(unsigned int var, const Point & p, const Elem & 
             // FIXME: this needs better syntax: It is matrix-vector multiplication.
             grad_u(xyz) += fe_data.local_transform[v][xyz]
               * fe_data.dshape[l](v)
-              * this->current_solution (dof_indices[l]);
+              * (*sol)(dof_indices[l]);
           }
     }
 
@@ -2218,9 +2385,19 @@ Gradient System::point_gradient(unsigned int var, const Point & p, const Elem * 
 
 
 
+Gradient System::point_gradient(unsigned int var, const Point & p, const NumericVector<Number> * sol) const
+{
+  return this->point_gradient(var, p, true, sol);
+}
+
+
+
 // We can only accumulate a hessian with --enable-second
 #ifdef LIBMESH_ENABLE_SECOND_DERIVATIVES
-Tensor System::point_hessian(unsigned int var, const Point & p, const bool insist_on_success) const
+Tensor System::point_hessian(unsigned int var,
+                             const Point & p,
+                             const bool insist_on_success,
+                             const NumericVector<Number> *sol) const
 {
   // This function must be called on every processor; there's no
   // telling where in the partition p falls.
@@ -2248,13 +2425,18 @@ Tensor System::point_hessian(unsigned int var, const Point & p, const bool insis
   if (!insist_on_success || !mesh.is_serial())
     locator.enable_out_of_mesh_mode();
 
-  // Get a pointer to the element that contains P
-  const Elem * e = locator(p);
+  // Get a pointer to an element that contains p and allows us to
+  // evaluate var
+  const std::set<subdomain_id_type> & raw_subdomains =
+    this->variable(var).active_subdomains();
+  const std::set<subdomain_id_type> * implicit_subdomains =
+    raw_subdomains.empty() ? nullptr : &raw_subdomains;
+  const Elem * e = locator(p, implicit_subdomains);
 
   Tensor hess_u;
 
   if (e && this->get_dof_map().is_evaluable(*e, var))
-    hess_u = point_hessian(var, p, *e);
+    hess_u = point_hessian(var, p, *e, sol);
 
   // If I have an element containing p, then let's let everyone know
   processor_id_type lowest_owner =
@@ -2273,12 +2455,18 @@ Tensor System::point_hessian(unsigned int var, const Point & p, const bool insis
   return hess_u;
 }
 
-Tensor System::point_hessian(unsigned int var, const Point & p, const Elem & e) const
+Tensor System::point_hessian(unsigned int var,
+                             const Point & p,
+                             const Elem & e,
+                             const NumericVector<Number> *sol) const
 {
   // Ensuring that the given point is really in the element is an
   // expensive assert, but as long as debugging is turned on we might
   // as well try to catch a particularly nasty potential error
   libmesh_assert (e.contains_point(p));
+
+  if (!sol)
+    sol = this->current_local_solution.get();
 
 #ifdef LIBMESH_ENABLE_INFINITE_ELEMENTS
   if (e.infinite())
@@ -2306,9 +2494,9 @@ Tensor System::point_hessian(unsigned int var, const Point & p, const Elem & e) 
   // Build a FE again so we can calculate u(p)
   std::unique_ptr<FEBase> fe (FEBase::build(e.dim(), fe_type));
 
-  // Map the physical co-ordinates to the master co-ordinates using the inverse_map from fe_interface.h
+  // Map the physical co-ordinates to the master co-ordinates
   // Build a vector of point co-ordinates to send to reinit
-  std::vector<Point> coor(1, FEInterface::inverse_map(e.dim(), fe_type, &e, p));
+  std::vector<Point> coor(1, FEMap::inverse_map(e.dim(), &e, p));
 
   // Get the values of the shape function derivatives
   const std::vector<std::vector<RealTensor>> &  d2phi = fe->get_d2phi();
@@ -2321,7 +2509,7 @@ Tensor System::point_hessian(unsigned int var, const Point & p, const Elem & e) 
 
   for (unsigned int l=0; l<num_dofs; l++)
     {
-      hess_u.add_scaled (d2phi[l][0], this->current_solution (dof_indices[l]));
+      hess_u.add_scaled (d2phi[l][0], (*sol)(dof_indices[l]));
     }
 
   return hess_u;
@@ -2337,8 +2525,15 @@ Tensor System::point_hessian(unsigned int var, const Point & p, const Elem * e) 
 
 
 
+Tensor System::point_hessian(unsigned int var, const Point & p, const NumericVector<Number> * sol) const
+{
+  return this->point_hessian(var, p, true, sol);
+}
+
 #else
-Tensor System::point_hessian(unsigned int, const Point &, const bool) const
+
+Tensor System::point_hessian(unsigned int, const Point &, const bool,
+                             const NumericVector<Number> *) const
 {
   libmesh_error_msg("We can only accumulate a hessian with --enable-second");
 
@@ -2346,7 +2541,8 @@ Tensor System::point_hessian(unsigned int, const Point &, const bool) const
   return Tensor();
 }
 
-Tensor System::point_hessian(unsigned int, const Point &, const Elem &) const
+Tensor System::point_hessian(unsigned int, const Point &, const Elem &,
+                             const NumericVector<Number> *) const
 {
   libmesh_error_msg("We can only accumulate a hessian with --enable-second");
 
@@ -2355,6 +2551,14 @@ Tensor System::point_hessian(unsigned int, const Point &, const Elem &) const
 }
 
 Tensor System::point_hessian(unsigned int, const Point &, const Elem *) const
+{
+  libmesh_error_msg("We can only accumulate a hessian with --enable-second");
+
+  // Avoid compiler warnings
+  return Tensor();
+}
+
+Tensor System::point_hessian(unsigned int, const Point &, const NumericVector<Number> *) const
 {
   libmesh_error_msg("We can only accumulate a hessian with --enable-second");
 

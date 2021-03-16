@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -23,16 +23,43 @@
 // Local Includes
 #include "libmesh/libmesh_common.h"
 #include "libmesh/dense_matrix_base.h"
+#include "libmesh/int_range.h"
 
 // For the definition of PetscBLASInt.
 #if (LIBMESH_HAVE_PETSC)
 # include "libmesh/petsc_macro.h"
+# ifdef I
+#  define LIBMESH_SAW_I
+# endif
+
+#include "libmesh/ignore_warnings.h"
 # include <petscsys.h>
+#include "libmesh/restore_warnings.h"
+
+# ifndef LIBMESH_SAW_I
+#  undef I // Avoid complex.h contamination
+# endif
 #endif
 
 // C++ includes
 #include <vector>
 #include <algorithm>
+#include <initializer_list>
+
+#ifdef LIBMESH_HAVE_METAPHYSICL
+#include "metaphysicl/dualnumber_forward.h"
+#include "metaphysicl/raw_type.h"
+
+namespace std
+{
+// These declarations must be visible to the DenseMatrix method declarations that use
+// a std::abs trailing return type in order to instantiate a DenseMatrix<DualNumber>
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> abs(const MetaPhysicL::DualNumber<T, D, asd> & in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> abs(MetaPhysicL::DualNumber<T, D, asd> && in);
+}
+#endif
 
 namespace libMesh
 {
@@ -62,6 +89,16 @@ public:
               const unsigned int new_n=0);
 
   /**
+   * Constructor taking the number of rows, columns, and an
+   * initializer_list, which must be of length nrow * ncol, of
+   * row-major values to initialize the DenseMatrix with.
+   */
+  template <typename T2>
+  DenseMatrix(unsigned int nrow,
+              unsigned int ncol,
+              std::initializer_list<T2> init_list);
+
+  /**
    * The 5 special functions can be defaulted for this class, as it
    * does not manage any memory itself.
    */
@@ -71,7 +108,18 @@ public:
   DenseMatrix & operator= (DenseMatrix &&) = default;
   virtual ~DenseMatrix() = default;
 
+  /**
+   * Sets all elements of the matrix to 0 and resets any decomposition
+   * flag which may have been previously set.  This allows e.g. a new
+   * LU decomposition to be computed while reusing the same storage.
+   */
   virtual void zero() override;
+
+  /**
+   * Get submatrix with the smallest row and column indices and the submatrix size.
+   */
+  DenseMatrix sub_matrix(unsigned int row_id, unsigned int row_size,
+                         unsigned int col_id, unsigned int col_size) const;
 
   /**
    * \returns The \p (i,j) element of the matrix.
@@ -206,8 +254,11 @@ public:
   void swap(DenseMatrix<T> & other_matrix);
 
   /**
-   * Resize the matrix.  Will never free memory, but may
-   * allocate more.  Sets all elements to 0.
+   * Resizes the matrix to the specified size and calls zero().  Will
+   * never free memory, but may allocate more. Note: when the matrix
+   * is zero()'d, any decomposition (LU, Cholesky, etc.) is also
+   * cleared, forcing a new decomposition to be computed the next time
+   * e.g. lu_solve() is called.
    */
   void resize(const unsigned int new_m,
               const unsigned int new_n);
@@ -267,13 +318,13 @@ public:
    * \returns The minimum entry in the matrix, or the minimum real
    * part in the case of complex numbers.
    */
-  Real min () const;
+  auto min () const -> decltype(libmesh_real(T(0)));
 
   /**
    * \returns The maximum entry in the matrix, or the maximum real
    * part in the case of complex numbers.
    */
-  Real max () const;
+  auto max () const -> decltype(libmesh_real(T(0)));
 
   /**
    * \returns The l1-norm of the matrix, that is, the max column sum:
@@ -283,7 +334,7 @@ public:
    * This is the natural matrix norm that is compatible to the l1-norm
    * for vectors, i.e. \f$ |Mv|_1 \leq |M|_1 |v|_1 \f$.
    */
-  Real l1_norm () const;
+  auto l1_norm () const -> decltype(std::abs(T(0)));
 
   /**
    * \returns The linfty-norm of the matrix, that is, the max row sum:
@@ -293,7 +344,7 @@ public:
    * This is the natural matrix norm that is compatible to the
    * linfty-norm of vectors, i.e. \f$ |Mv|_\infty \leq |M|_\infty |v|_\infty \f$.
    */
-  Real linfty_norm () const;
+  auto linfty_norm () const -> decltype(std::abs(T(0)));
 
   /**
    * Left multiplies by the transpose of the matrix \p A.
@@ -361,6 +412,15 @@ public:
    * Solve the system Ax=b given the input vector b.  Partial pivoting
    * is performed by default in order to keep the algorithm stable to
    * the effects of round-off error.
+   *
+   * Important note: once you call lu_solve(), you must _not_ modify
+   * the entries of the matrix via calls to operator(i,j) and call
+   * lu_solve() again without first calling either zero() or resize(),
+   * otherwise the code will skip computing the decomposition of the
+   * matrix and go directly to the back substitution step. This is
+   * done on purpose for efficiency, so that the same LU decomposition
+   * can be used with multiple right-hand sides, but it does also make
+   * it possible to "shoot yourself in the foot", so be careful!
    */
   void lu_solve (const DenseVector<T> & b,
                  DenseVector<T> & x);
@@ -372,6 +432,16 @@ public:
    * that the matrix is SPD.  If the matrix is not SPD, an error is generated.
    * One nice property of Cholesky decompositions is that they do not require
    * pivoting for stability.
+   *
+   * Important note: once you call cholesky_solve(), you must _not_
+   * modify the entries of the matrix via calls to operator(i,j) and
+   * call cholesky_solve() again without first calling either zero()
+   * or resize(), otherwise the code will skip computing the
+   * decomposition of the matrix and go directly to the back
+   * substitution step. This is done on purpose for efficiency, so
+   * that the same decomposition can be used with multiple right-hand
+   * sides, but it does also make it possible to "shoot yourself in
+   * the foot", so be careful!
    *
    * \note This method may also be used when A is real-valued and x
    * and b are complex-valued.
@@ -523,6 +593,14 @@ public:
    * removed...
    */
   bool use_blas_lapack;
+
+  /**
+   * Helper structure for determining whether to use blas_lapack
+   */
+  struct UseBlasLapack
+  {
+    static const bool value = false;
+  };
 
 private:
 
@@ -733,8 +811,18 @@ typedef DenseMatrix<Complex> ComplexDenseMatrix;
 
 using namespace DenseMatrices;
 
-
-
+// The PETSc Lapack wrappers are only for PetscScalar, therefore we
+// can't e.g. get a Lapack version of DenseMatrix<Real>::lu_solve()
+// when libmesh/PETSc are compiled with complex numbers.
+#if defined(LIBMESH_HAVE_PETSC) && \
+  defined(LIBMESH_USE_REAL_NUMBERS) && \
+  defined(LIBMESH_DEFAULT_DOUBLE_PRECISION)
+template <>
+struct DenseMatrix<double>::UseBlasLapack
+{
+  static const bool value = true;
+};
+#endif
 
 
 // ------------------------------------------------------------
@@ -744,15 +832,26 @@ inline
 DenseMatrix<T>::DenseMatrix(const unsigned int new_m,
                             const unsigned int new_n) :
   DenseMatrixBase<T>(new_m,new_n),
-#if defined(LIBMESH_HAVE_PETSC) && defined(LIBMESH_USE_REAL_NUMBERS) && defined(LIBMESH_DEFAULT_DOUBLE_PRECISION)
-  use_blas_lapack(true),
-#else
-  use_blas_lapack(false),
-#endif
+  use_blas_lapack(DenseMatrix<T>::UseBlasLapack::value),
   _val(),
   _decomposition_type(NONE)
 {
   this->resize(new_m,new_n);
+}
+
+template <typename T>
+template <typename T2>
+DenseMatrix<T>::DenseMatrix(unsigned int nrow,
+                            unsigned int ncol,
+                            std::initializer_list<T2> init_list) :
+  DenseMatrixBase<T>(nrow, ncol),
+  use_blas_lapack(DenseMatrix<T>::UseBlasLapack::value),
+  _val(init_list.begin(), init_list.end()),
+  _decomposition_type(NONE)
+{
+  // Make sure the user passed us an amount of data which is
+  // consistent with the size of the matrix.
+  libmesh_assert_equal_to(nrow * ncol, init_list.size());
 }
 
 
@@ -816,6 +915,37 @@ void DenseMatrix<T>::zero()
 
 template<typename T>
 inline
+DenseMatrix<T> DenseMatrix<T>::sub_matrix(unsigned int row_id, unsigned int row_size,
+                                          unsigned int col_id, unsigned int col_size) const
+{
+  libmesh_assert_less (row_id + row_size - 1, this->_m);
+  libmesh_assert_less (col_id + col_size - 1, this->_n);
+
+  DenseMatrix<T> sub;
+  sub._m = row_size;
+  sub._n = col_size;
+  sub._val.resize(row_size * col_size);
+
+  unsigned int end_col = this->_n - col_size - col_id;
+  unsigned int p = row_id * this->_n;
+  unsigned int q = 0;
+  for (unsigned int i=0; i<row_size; i++)
+  {
+    // skip the beginning columns
+    p += col_id;
+    for (unsigned int j=0; j<col_size; j++)
+      sub._val[q++] = _val[p++];
+    // skip the rest columns
+    p += end_col;
+  }
+
+  return sub;
+}
+
+
+
+template<typename T>
+inline
 T DenseMatrix<T>::operator () (const unsigned int i,
                                const unsigned int j) const
 {
@@ -851,8 +981,8 @@ template<typename T>
 inline
 void DenseMatrix<T>::scale (const T factor)
 {
-  for (std::size_t i=0; i<_val.size(); i++)
-    _val[i] *= factor;
+  for (auto & v : _val)
+    v *= factor;
 }
 
 
@@ -860,7 +990,7 @@ template<typename T>
 inline
 void DenseMatrix<T>::scale_column (const unsigned int col, const T factor)
 {
-  for (unsigned int i=0; i<this->m(); i++)
+  for (auto i : make_range(this->m()))
     (*this)(i, col) *= factor;
 }
 
@@ -887,8 +1017,8 @@ DenseMatrix<T>::add (const T2 factor,
   libmesh_assert_equal_to (this->m(), mat.m());
   libmesh_assert_equal_to (this->n(), mat.n());
 
-  for (unsigned int i=0; i<this->m(); i++)
-    for (unsigned int j=0; j<this->n(); j++)
+  for (auto i : make_range(this->m()))
+    for (auto j : make_range(this->n()))
       (*this)(i,j) += factor * mat(i,j);
 }
 
@@ -898,7 +1028,7 @@ template<typename T>
 inline
 bool DenseMatrix<T>::operator == (const DenseMatrix<T> & mat) const
 {
-  for (std::size_t i=0; i<_val.size(); i++)
+  for (auto i : index_range(_val))
     if (_val[i] != mat._val[i])
       return false;
 
@@ -911,7 +1041,7 @@ template<typename T>
 inline
 bool DenseMatrix<T>::operator != (const DenseMatrix<T> & mat) const
 {
-  for (std::size_t i=0; i<_val.size(); i++)
+  for (auto i : index_range(_val))
     if (_val[i] != mat._val[i])
       return true;
 
@@ -924,7 +1054,7 @@ template<typename T>
 inline
 DenseMatrix<T> & DenseMatrix<T>::operator += (const DenseMatrix<T> & mat)
 {
-  for (std::size_t i=0; i<_val.size(); i++)
+  for (auto i : index_range(_val))
     _val[i] += mat._val[i];
 
   return *this;
@@ -936,7 +1066,7 @@ template<typename T>
 inline
 DenseMatrix<T> & DenseMatrix<T>::operator -= (const DenseMatrix<T> & mat)
 {
-  for (std::size_t i=0; i<_val.size(); i++)
+  for (auto i : index_range(_val))
     _val[i] -= mat._val[i];
 
   return *this;
@@ -946,17 +1076,17 @@ DenseMatrix<T> & DenseMatrix<T>::operator -= (const DenseMatrix<T> & mat)
 
 template<typename T>
 inline
-Real DenseMatrix<T>::min () const
+auto DenseMatrix<T>::min () const -> decltype(libmesh_real(T(0)))
 {
   libmesh_assert (this->_m);
   libmesh_assert (this->_n);
-  Real my_min = libmesh_real((*this)(0,0));
+  auto my_min = libmesh_real((*this)(0,0));
 
   for (unsigned int i=0; i!=this->_m; i++)
     {
       for (unsigned int j=0; j!=this->_n; j++)
         {
-          Real current = libmesh_real((*this)(i,j));
+          auto current = libmesh_real((*this)(i,j));
           my_min = (my_min < current? my_min : current);
         }
     }
@@ -967,17 +1097,17 @@ Real DenseMatrix<T>::min () const
 
 template<typename T>
 inline
-Real DenseMatrix<T>::max () const
+auto DenseMatrix<T>::max () const -> decltype(libmesh_real(T(0)))
 {
   libmesh_assert (this->_m);
   libmesh_assert (this->_n);
-  Real my_max = libmesh_real((*this)(0,0));
+  auto my_max = libmesh_real((*this)(0,0));
 
   for (unsigned int i=0; i!=this->_m; i++)
     {
       for (unsigned int j=0; j!=this->_n; j++)
         {
-          Real current = libmesh_real((*this)(i,j));
+          auto current = libmesh_real((*this)(i,j));
           my_max = (my_max > current? my_max : current);
         }
     }
@@ -988,17 +1118,17 @@ Real DenseMatrix<T>::max () const
 
 template<typename T>
 inline
-Real DenseMatrix<T>::l1_norm () const
+auto DenseMatrix<T>::l1_norm () const -> decltype(std::abs(T(0)))
 {
   libmesh_assert (this->_m);
   libmesh_assert (this->_n);
 
-  Real columnsum = 0.;
+  auto columnsum = std::abs(T(0));
   for (unsigned int i=0; i!=this->_m; i++)
     {
       columnsum += std::abs((*this)(i,0));
     }
-  Real my_max = columnsum;
+  auto my_max = columnsum;
   for (unsigned int j=1; j!=this->_n; j++)
     {
       columnsum = 0.;
@@ -1015,17 +1145,17 @@ Real DenseMatrix<T>::l1_norm () const
 
 template<typename T>
 inline
-Real DenseMatrix<T>::linfty_norm () const
+auto DenseMatrix<T>::linfty_norm () const -> decltype(std::abs(T(0)))
 {
   libmesh_assert (this->_m);
   libmesh_assert (this->_n);
 
-  Real rowsum = 0.;
+  auto rowsum = std::abs(T(0));
   for (unsigned int j=0; j!=this->_n; j++)
     {
       rowsum += std::abs((*this)(0,j));
     }
-  Real my_max = rowsum;
+  auto my_max = rowsum;
   for (unsigned int i=1; i!=this->_m; i++)
     {
       rowsum = 0.;
@@ -1066,14 +1196,14 @@ T DenseMatrix<T>::transpose (const unsigned int i,
 
 //   // move the known value into the RHS
 //   // and zero the column
-//   for (unsigned int i=0; i<this->m(); i++)
+//   for (auto i : make_range(this->m()))
 //     {
 //       rhs(i) -= ((*this)(i,jv))*val;
 //       (*this)(i,jv) = 0.;
 //     }
 
 //   // zero the row
-//   for (unsigned int j=0; j<this->n(); j++)
+//   for (auto j : make_range(this->n()))
 //     (*this)(iv,j) = 0.;
 
 //   (*this)(iv,jv) = 1.;
@@ -1086,7 +1216,26 @@ T DenseMatrix<T>::transpose (const unsigned int i,
 
 } // namespace libMesh
 
+#ifdef LIBMESH_HAVE_METAPHYSICL
+namespace MetaPhysicL
+{
+template <typename T>
+struct RawType<libMesh::DenseMatrix<T>>
+{
+  typedef libMesh::DenseMatrix<typename RawType<T>::value_type> value_type;
 
+  static value_type value (const libMesh::DenseMatrix<T> & in)
+    {
+      value_type ret(in.m(), in.n());
+      for (unsigned int i = 0; i < in.m(); ++i)
+        for (unsigned int j = 0; j < in.n(); ++j)
+          ret(i,j) = raw_value(in(i,j));
+
+      return ret;
+    }
+};
+}
+#endif
 
 
 #endif // LIBMESH_DENSE_MATRIX_H

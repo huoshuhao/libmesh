@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -51,8 +51,9 @@ extern "C"
     if (solver.verbose)
       libMesh::out << "  PetscDiffSolver step " << its
                    << ", |residual|_2 = " << fnorm << std::endl;
-    if (solver.linear_solution_monitor.get()) {
-      int ierr = 0;
+    if (solver.linear_solution_monitor.get())
+    {
+      PetscErrorCode ierr = 0;
 
       Vec petsc_delta_u;
       ierr = SNESGetSolutionUpdate(snes, &petsc_delta_u);
@@ -131,14 +132,8 @@ extern "C"
   PetscErrorCode
   __libmesh_petsc_diff_solver_jacobian (SNES,
                                         Vec x,
-#if PETSC_RELEASE_LESS_THAN(3,5,0)
-                                        Mat * libmesh_dbg_var(j),
-                                        Mat * pc,
-                                        MatStructure * msflag,
-#else
                                         Mat libmesh_dbg_var(j),
                                         Mat pc,
-#endif
                                         void * ctx)
   {
     libmesh_assert(x);
@@ -157,11 +152,7 @@ extern "C"
       *cast_ptr<PetscVector<Number> *>(sys.solution.get());
     PetscVector<Number> X_input(x, sys.comm());
 
-#if PETSC_RELEASE_LESS_THAN(3,5,0)
-    PetscMatrix<Number> J_input(*pc, sys.comm());
-#else
     PetscMatrix<Number> J_input(pc, sys.comm());
-#endif
     PetscMatrix<Number> & J_system =
       *cast_ptr<PetscMatrix<Number> *>(sys.matrix);
 
@@ -186,9 +177,6 @@ extern "C"
     X_input.swap(X_system);
     J_input.swap(J_system);
 
-#if PETSC_RELEASE_LESS_THAN(3,5,0)
-    *msflag = SAME_NONZERO_PATTERN;
-#endif
     // No errors, we hope
     return 0;
   }
@@ -213,10 +201,7 @@ void PetscDiffSolver::init ()
 
 
 
-PetscDiffSolver::~PetscDiffSolver ()
-{
-  this->clear();
-}
+PetscDiffSolver::~PetscDiffSolver () = default;
 
 
 
@@ -224,14 +209,12 @@ void PetscDiffSolver::clear()
 {
   LOG_SCOPE("clear()", "PetscDiffSolver");
 
-  int ierr = LibMeshSNESDestroy(&_snes);
-  LIBMESH_CHKERR(ierr);
+  // calls custom deleter
+  _snes.destroy();
 
 #if !PETSC_VERSION_LESS_THAN(3,7,3)
-#ifdef LIBMESH_ENABLE_AMR
-#ifdef LIBMESH_HAVE_METAPHYSICL
+#if defined(LIBMESH_ENABLE_AMR) && defined(LIBMESH_HAVE_METAPHYSICL)
   _dm_wrapper.clear();
-#endif
 #endif
 #endif
 }
@@ -262,31 +245,26 @@ DiffSolver::SolveResult convert_solve_result(SNESConvergedReason r)
       return DiffSolver::CONVERGED_ABSOLUTE_RESIDUAL;
     case SNES_CONVERGED_FNORM_RELATIVE:
       return DiffSolver::CONVERGED_RELATIVE_RESIDUAL;
-#if PETSC_VERSION_LESS_THAN(3,2,1)
-    case SNES_CONVERGED_PNORM_RELATIVE:
-#else
     case SNES_CONVERGED_SNORM_RELATIVE:
-#endif
       return DiffSolver::CONVERGED_RELATIVE_STEP;
     case SNES_CONVERGED_ITS:
+      // SNES_CONVERGED_TR_DELTA was changed to a diverged condition,
+      // SNES_DIVERGED_TR_DELTA, in PETSc 1c6b2ff8df. This change will
+      // likely be in 3.12 and later releases.
+#if PETSC_RELEASE_LESS_THAN(3,12,0)
     case SNES_CONVERGED_TR_DELTA:
+#endif
       return DiffSolver::CONVERGED_NO_REASON;
     case SNES_DIVERGED_FUNCTION_DOMAIN:
     case SNES_DIVERGED_FUNCTION_COUNT:
     case SNES_DIVERGED_FNORM_NAN:
-#if !PETSC_VERSION_LESS_THAN(3,3,0)
     case SNES_DIVERGED_INNER:
-#endif
     case SNES_DIVERGED_LINEAR_SOLVE:
     case SNES_DIVERGED_LOCAL_MIN:
       return DiffSolver::DIVERGED_NO_REASON;
     case SNES_DIVERGED_MAX_IT:
       return DiffSolver::DIVERGED_MAX_NONLINEAR_ITERATIONS;
-#if PETSC_VERSION_LESS_THAN(3,2,0)
-    case SNES_DIVERGED_LS_FAILURE:
-#else
     case SNES_DIVERGED_LINE_SEARCH:
-#endif
       return DiffSolver::DIVERGED_BACKTRACKING_FAILURE;
       // In PETSc, SNES_CONVERGED_ITERATING means
       // the solve is still iterating, but by the
@@ -314,7 +292,7 @@ unsigned int PetscDiffSolver::solve()
   PetscVector<Number> & r =
     *(cast_ptr<PetscVector<Number> *>(_system.rhs));
 
-  int ierr = 0;
+  PetscErrorCode ierr = 0;
 
   ierr = SNESSetFunction (_snes, r.vec(),
                           __libmesh_petsc_diff_solver_residual, this);
@@ -338,11 +316,11 @@ unsigned int PetscDiffSolver::solve()
   SNESGetConvergedReason(_snes, &reason);
 
   PetscInt l_its, nl_its;
-  ierr = SNESGetLinearSolveIterations(_snes,&l_its);
+  ierr = SNESGetLinearSolveIterations(_snes, &l_its);
   LIBMESH_CHKERR(ierr);
   this->_inner_iterations = l_its;
 
-  ierr = SNESGetIterationNumber(_snes,&nl_its);
+  ierr = SNESGetIterationNumber(_snes, &nl_its);
   LIBMESH_CHKERR(ierr);
   this->_outer_iterations = nl_its;
 
@@ -351,9 +329,9 @@ unsigned int PetscDiffSolver::solve()
 
 void PetscDiffSolver::setup_petsc_data()
 {
-  int ierr=0;
+  PetscErrorCode ierr = 0;
 
-  ierr = SNESCreate(this->comm().get(),&_snes);
+  ierr = SNESCreate(this->comm().get(), _snes.get());
   LIBMESH_CHKERR(ierr);
 
   ierr = SNESMonitorSet (_snes, __libmesh_petsc_diff_solver_monitor,
@@ -370,11 +348,9 @@ void PetscDiffSolver::setup_petsc_data()
 
   // This needs to be called before SNESSetFromOptions
 #if !PETSC_VERSION_LESS_THAN(3,7,3)
-#ifdef LIBMESH_ENABLE_AMR
-#ifdef LIBMESH_HAVE_METAPHYSICL
+#if defined(LIBMESH_ENABLE_AMR) && defined(LIBMESH_HAVE_METAPHYSICL)
   if (use_petsc_dm)
-    this->_dm_wrapper.init_and_attach_petscdm(_system, _snes);
-#endif
+    this->_dm_wrapper.init_and_attach_petscdm(_system, *_snes);
 #endif
 #endif
 

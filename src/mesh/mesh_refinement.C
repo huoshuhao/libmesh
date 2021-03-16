@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -211,10 +211,14 @@ Node * MeshRefinement::add_node(Elem & parent,
 Elem * MeshRefinement::add_elem (Elem * elem)
 {
   libmesh_assert(elem);
-  _mesh.add_elem (elem);
-  return elem;
+  return _mesh.add_elem (elem);
 }
 
+Elem * MeshRefinement::add_elem (std::unique_ptr<Elem> elem)
+{
+  libmesh_assert(elem);
+  return _mesh.add_elem(std::move(elem));
+}
 
 
 void MeshRefinement::create_parent_error_vector(const ErrorVector & error_per_cell,
@@ -350,7 +354,7 @@ void MeshRefinement::update_nodes_map ()
 
 
 
-bool MeshRefinement::test_level_one (bool libmesh_dbg_var(libmesh_assert_pass))
+bool MeshRefinement::test_level_one (bool libmesh_dbg_var(libmesh_assert_pass)) const
 {
   // This function must be run on all processors at once
   parallel_object_only();
@@ -425,7 +429,7 @@ bool MeshRefinement::test_level_one (bool libmesh_dbg_var(libmesh_assert_pass))
 
 
 
-bool MeshRefinement::test_unflagged (bool libmesh_dbg_var(libmesh_assert_pass))
+bool MeshRefinement::test_unflagged (bool libmesh_dbg_var(libmesh_assert_pass)) const
 {
   // This function must be run on all processors at once
   parallel_object_only();
@@ -570,7 +574,7 @@ bool MeshRefinement::refine_and_coarsen_elements ()
       _mesh.libmesh_assert_valid_parallel_ids();
 #endif
 
-      _mesh.prepare_for_use (/*skip_renumber =*/false);
+      _mesh.prepare_for_use ();
 
       if (_face_level_mismatch_limit)
         libmesh_assert(test_level_one(true));
@@ -669,7 +673,7 @@ bool MeshRefinement::coarsen_elements ()
 
   // Finally, the new mesh may need to be prepared for use
   if (mesh_changed)
-    _mesh.prepare_for_use (/*skip_renumber =*/false);
+    _mesh.prepare_for_use ();
 
   return mesh_changed;
 }
@@ -742,7 +746,7 @@ bool MeshRefinement::refine_elements ()
 
   // Finally, the new mesh needs to be prepared for use
   if (mesh_changed)
-    _mesh.prepare_for_use (/*skip_renumber =*/false);
+    _mesh.prepare_for_use ();
 
   return mesh_changed;
 }
@@ -1100,7 +1104,7 @@ bool MeshRefinement::make_coarsening_compatible()
       parallel_object_only();
 
       Parallel::MessageTag
-        uncoarsenable_tag = this->comm().get_unique_tag(2718);
+        uncoarsenable_tag = this->comm().get_unique_tag();
       std::vector<Parallel::Request> uncoarsenable_push_requests(n_proc-1);
 
       for (processor_id_type p = 0; p != n_proc; ++p)
@@ -1695,7 +1699,7 @@ void MeshRefinement::uniformly_refine (unsigned int n)
 
   // Finally, the new mesh probably needs to be prepared for use
   if (n > 0)
-    _mesh.prepare_for_use (/*skip_renumber =*/false);
+    _mesh.prepare_for_use ();
 }
 
 
@@ -1733,7 +1737,7 @@ void MeshRefinement::uniformly_coarsen (unsigned int n)
               parents_to_coarsen[elem->processor_id()].push_back(elem->id());
 
           Parallel::MessageTag
-            coarsen_tag = this->comm().get_unique_tag(271);
+            coarsen_tag = this->comm().get_unique_tag();
           std::vector<Parallel::Request> coarsen_push_requests(n_proc-1);
 
           for (processor_id_type p = 0; p != n_proc; ++p)
@@ -1783,14 +1787,14 @@ void MeshRefinement::uniformly_coarsen (unsigned int n)
 
   // Finally, the new mesh probably needs to be prepared for use
   if (n > 0)
-    _mesh.prepare_for_use (/*skip_renumber =*/false);
+    _mesh.prepare_for_use ();
 }
 
 
 
 Elem * MeshRefinement::topological_neighbor(Elem * elem,
                                             const PointLocatorBase * point_locator,
-                                            const unsigned int side)
+                                            const unsigned int side) const
 {
 #ifdef LIBMESH_ENABLE_PERIODIC
   if (_periodic_boundaries && !_periodic_boundaries->empty())
@@ -1806,7 +1810,7 @@ Elem * MeshRefinement::topological_neighbor(Elem * elem,
 
 bool MeshRefinement::has_topological_neighbor(const Elem * elem,
                                               const PointLocatorBase * point_locator,
-                                              const Elem * neighbor)
+                                              const Elem * neighbor) const
 {
 #ifdef LIBMESH_ENABLE_PERIODIC
   if (_periodic_boundaries && !_periodic_boundaries->empty())

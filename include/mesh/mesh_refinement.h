@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -290,7 +290,7 @@ public:
    * Aborts the program if \p libmesh_assert_yes is true and the mesh
    * does not satisfy the level one restriction.
    */
-  bool test_level_one (bool libmesh_assert_yes = false);
+  bool test_level_one (bool libmesh_assert_yes = false) const;
 
   /**
    * \returns \p true if the mesh has no elements flagged to be
@@ -299,7 +299,7 @@ public:
    * Aborts the program if libmesh_assert_yes is true and the mesh has
    * flagged elements.
    */
-  bool test_unflagged (bool libmesh_assert_yes = false);
+  bool test_unflagged (bool libmesh_assert_yes = false) const;
 
   /**
    * Add a node to the mesh.  The node should be node n of child c of
@@ -319,6 +319,15 @@ public:
    * Adds the element \p elem to the mesh.
    */
   Elem * add_elem (Elem * elem);
+
+  /**
+   * Same as the function above, but makes it clear that the
+   * MeshRefinement object (actually, its Mesh) takes ownership of the
+   * Elem which is passed in, so the user is not responsible for
+   * deleting it. The version of add_elem() taking a dumb pointer will
+   * eventually be deprecated in favor of this version.
+   */
+  Elem * add_elem (std::unique_ptr<Elem> elem);
 
   /**
    * \returns A constant reference to the \p MeshBase object associated
@@ -724,7 +733,7 @@ private:
    */
   Elem * topological_neighbor (Elem * elem,
                                const PointLocatorBase * point_locator,
-                               const unsigned int side);
+                               const unsigned int side) const;
 
   /**
    * Local dispatch function for checking the correct has_neighbor
@@ -732,7 +741,7 @@ private:
    */
   bool has_topological_neighbor (const Elem * elem,
                                  const PointLocatorBase * point_locator,
-                                 const Elem * neighbor);
+                                 const Elem * neighbor) const;
 
   /**
    * Data structure that holds the new nodes information.

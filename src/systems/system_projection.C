@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -26,6 +26,11 @@
 
 #ifdef LIBMESH_HAVE_METAPHYSICL
 
+// With quad precision we need the shim function declarations to
+// precede the MetaPhysicL use of them
+#include "libmesh/libmesh_common.h"
+#include "libmesh/compare_types.h"
+
 // FIXME - having to do this with MetaPhysicL brings me shame - RHS
 #include "libmesh/ignore_warnings.h"
 // Template specialization declarations in here need to *precede* code
@@ -33,30 +38,63 @@
 #include "metaphysicl/dynamicsparsenumberarray_decl.h"
 #include "libmesh/restore_warnings.h"
 
-#include "libmesh/compare_types.h"
-#include "libmesh/int_range.h"
-
 using MetaPhysicL::DynamicSparseNumberArray;
 
 namespace libMesh
 {
 // From the perspective of libMesh gradient vectors, a DSNA is a
 // scalar component
-template <typename T, typename I>
-struct ScalarTraits<MetaPhysicL::DynamicSparseNumberArray<T,I> >
+template <typename T, typename IndexType>
+struct ScalarTraits<MetaPhysicL::DynamicSparseNumberArray<T,IndexType> >
 {
   static const bool value = true;
 };
 
 // And although MetaPhysicL knows how to combine DSNA with something
 // else, we need to teach libMesh too.
-template <typename T, typename I, typename T2>
-struct CompareTypes<MetaPhysicL::DynamicSparseNumberArray<T,I>, T2>
+template <typename T, typename IndexType, typename T2>
+struct CompareTypes<MetaPhysicL::DynamicSparseNumberArray<T,IndexType>, T2>
 {
   typedef typename
   MetaPhysicL::DynamicSparseNumberArray
-  <typename CompareTypes<T,T2>::supertype,I> supertype;
+  <typename CompareTypes<T,T2>::supertype,IndexType> supertype;
 };
+
+template <typename T> struct TypeToSend;
+
+template <typename T, typename IndexType>
+struct TypeToSend<MetaPhysicL::DynamicSparseNumberArray<T,IndexType>> {
+  typedef std::vector<std::pair<IndexType,T>> type;
+};
+
+template <typename T, typename IndexType>
+const std::vector<std::pair<IndexType,T>>
+convert_to_send(MetaPhysicL::DynamicSparseNumberArray<T,IndexType> & in)
+{
+  const std::size_t in_size = in.size();
+  std::vector<std::pair<IndexType,T>> returnval(in_size);
+
+  for (std::size_t i=0; i != in_size; ++i)
+    {
+      returnval[i].first = in.raw_index(i);
+      returnval[i].second = in.raw_at(i);
+    }
+  return returnval;
+}
+
+template <typename SendT, typename T, typename IndexType>
+void convert_from_receive (SendT & received,
+                           MetaPhysicL::DynamicSparseNumberArray<T,IndexType> & converted)
+{
+  const std::size_t received_size = received.size();
+  converted.resize(received_size);
+  for (std::size_t i=0; i != received_size; ++i)
+    {
+      converted.raw_index(i) = received[i].first;
+      converted.raw_at(i) = received[i].second;
+    }
+}
+
 }
 
 
@@ -70,7 +108,9 @@ struct CompareTypes<MetaPhysicL::DynamicSparseNumberArray<T,I>, T2>
 #include "libmesh/fe_base.h"
 #include "libmesh/fe_interface.h"
 #include "libmesh/generic_projector.h"
+#include "libmesh/int_range.h"
 #include "libmesh/libmesh_logging.h"
+#include "libmesh/linear_solver.h"
 #include "libmesh/mesh_base.h"
 #include "libmesh/numeric_vector.h"
 #include "libmesh/quadrature.h"
@@ -79,6 +119,7 @@ struct CompareTypes<MetaPhysicL::DynamicSparseNumberArray<T,I>, T2>
 #include "libmesh/threads.h"
 #include "libmesh/wrapped_function.h"
 #include "libmesh/wrapped_functor.h"
+#include "libmesh/fe_interface.h"
 
 
 
@@ -229,11 +270,7 @@ void System::project_vector (NumericVector<Number> & vector,
  */
 void System::project_vector (const NumericVector<Number> & old_v,
                              NumericVector<Number> & new_v,
-                             int
-#ifdef LIBMESH_ENABLE_AMR
-                             is_adjoint
-#endif
-                             ) const
+                             int is_adjoint) const
 {
   LOG_SCOPE ("project_vector(old,new)", "System");
 
@@ -284,8 +321,11 @@ void System::project_vector (const NumericVector<Number> & old_v,
       local_old_vector_built = NumericVector<Number>::build(this->comm());
       new_vector_ptr = new_vector_built.get();
       local_old_vector = local_old_vector_built.get();
-      new_vector_ptr->init(this->n_dofs(), false, SERIAL);
-      local_old_vector->init(old_v.size(), false, SERIAL);
+      new_vector_ptr->init(this->n_dofs(), this->n_local_dofs(),
+                           this->get_dof_map().get_send_list(), false,
+                           GHOSTED);
+      local_old_vector->init(old_v.size(), old_v.local_size(),
+                             projection_list.send_list, false, GHOSTED);
       old_v.localize(*local_old_vector, projection_list.send_list);
       local_old_vector->close();
       old_vector_ptr = local_old_vector;
@@ -330,6 +370,14 @@ void System::project_vector (const NumericVector<Number> & old_v,
     {
       std::vector<unsigned int> vars(n_variables);
       std::iota(vars.begin(), vars.end(), 0);
+      std::vector<unsigned int> regular_vars, vector_vars;
+      for (auto var : vars)
+      {
+        if (FEInterface::field_type(this->variable_type(var)) == TYPE_SCALAR)
+          regular_vars.push_back(var);
+        else
+          vector_vars.push_back(var);
+      }
 
       // Use a typedef to make the calling sequence for parallel_for() a bit more readable
       typedef
@@ -341,8 +389,19 @@ void System::project_vector (const NumericVector<Number> & old_v,
       OldSolutionValue<Gradient, &FEMContext::point_gradient> g(*this, old_vector);
       VectorSetAction<Number> setter(new_vector);
 
-      Threads::parallel_for (active_local_elem_range,
-                             FEMProjector(*this, f, &g, setter, vars));
+      FEMProjector projector(*this, f, &g, setter, regular_vars);
+      projector.project(active_local_elem_range);
+
+      typedef
+        GenericProjector<OldSolutionValue<Gradient,   &FEMContext::point_value>,
+                         OldSolutionValue<Tensor, &FEMContext::point_gradient>,
+                         Gradient, VectorSetAction<Number>> FEMVectorProjector;
+
+      OldSolutionValue<Gradient, &FEMContext::point_value> f_vector(*this, old_vector);
+      OldSolutionValue<Tensor, &FEMContext::point_gradient> g_vector(*this, old_vector);
+
+      FEMVectorProjector vector_projector(*this, f_vector, &g_vector, setter, vector_vars);
+      vector_projector.project(active_local_elem_range);
 
       // Copy the SCALAR dofs from old_vector to new_vector
       // Note: We assume that all SCALAR dofs are on the
@@ -350,7 +409,7 @@ void System::project_vector (const NumericVector<Number> & old_v,
       if (this->processor_id() == (this->n_processors()-1))
         {
           const DofMap & dof_map = this->get_dof_map();
-          for (unsigned int var=0; var<this->n_vars(); var++)
+          for (auto var : make_range(this->n_vars()))
             if (this->variable(var).type().family == SCALAR)
               {
                 // We can just map SCALAR dofs directly across
@@ -376,7 +435,7 @@ void System::project_vector (const NumericVector<Number> & old_v,
       dist_v->init(this->n_dofs(), this->n_local_dofs(), false, PARALLEL);
       dist_v->close();
 
-      for (dof_id_type i=0; i!=dist_v->size(); i++)
+      for (auto i : make_range(dist_v->size()))
         if (new_vector(i) != 0.0)
           dist_v->set(i, new_vector(i));
 
@@ -391,23 +450,31 @@ void System::project_vector (const NumericVector<Number> & old_v,
     {
       // We may have to set dof values that this processor doesn't
       // own in certain special cases, like LAGRANGE FIRST or
-      // HERMITE THIRD elements on second-order meshes
-      for (dof_id_type i=0; i!=new_v.size(); i++)
-        if (new_vector(i) != 0.0)
-          new_v.set(i, new_vector(i));
+      // HERMITE THIRD elements on second-order meshes?
+      new_v = new_vector;
       new_v.close();
     }
 
-  if (is_adjoint == -1)
-    this->get_dof_map().enforce_constraints_exactly(*this, &new_v);
-  else if (is_adjoint >= 0)
-    this->get_dof_map().enforce_adjoint_constraints_exactly(new_v,
-                                                            is_adjoint);
 
+  // Apply constraints only if we we are asked to
+  if(this->project_with_constraints)
+  {
+    if (is_adjoint == -1)
+    {
+      this->get_dof_map().enforce_constraints_exactly(*this, &new_v);
+    }
+    else if (is_adjoint >= 0)
+    {
+      this->get_dof_map().enforce_adjoint_constraints_exactly(new_v,
+                                                            is_adjoint);
+    }
+  }
 #else
 
   // AMR is disabled: simply copy the vector
   new_v = old_v;
+
+  libmesh_ignore(is_adjoint);
 
 #endif // #ifdef LIBMESH_ENABLE_AMR
 }
@@ -448,6 +515,8 @@ class OldSolutionCoefs : public OldSolutionBase<Output, point_output>
 {
 public:
   typedef typename DSNAOutput<Output>::type DSNA;
+  typedef DSNA ValuePushType;
+  typedef DSNA FunctorValue;
 
   OldSolutionCoefs(const libMesh::System & sys_in) :
     OldSolutionBase<Output, point_output>(sys_in)
@@ -465,25 +534,140 @@ public:
                      unsigned int i,
                      unsigned int elem_dim,
                      const Node & n,
+                     bool extra_hanging_dofs,
                      Real /* time */ = 0.);
 
   DSNA eval_at_point(const FEMContext & c,
                      unsigned int i,
                      const Point & p,
-                     Real /* time */ = 0.);
+                     Real time,
+                     bool skip_context_check);
 
-  void eval_old_dofs (const FEMContext & c,
-                      unsigned int var,
+  void eval_mixed_derivatives (const FEMContext & libmesh_dbg_var(c),
+                               unsigned int i,
+                               unsigned int dim,
+                               const Node & n,
+                               std::vector<DSNA> & derivs)
+  {
+    LOG_SCOPE ("eval_mixed_derivatives", "OldSolutionCoefs");
+
+    // This should only be called on vertices
+    libmesh_assert_less(c.get_elem().get_node_index(&n),
+                        c.get_elem().n_vertices());
+
+    // Handle offset from non-scalar components in previous variables
+    libmesh_assert_less(i, this->component_to_var.size());
+    unsigned int var = this->component_to_var[i];
+
+    // We have 1 mixed derivative in 2D, 4 in 3D
+    const unsigned int n_mixed = (dim-1) * (dim-1);
+    derivs.resize(n_mixed);
+
+    // Be sure to handle cases where the variable wasn't defined on
+    // this node (e.g. due to changing subdomain support)
+    if (n.old_dof_object &&
+        n.old_dof_object->n_vars(this->sys.number()) &&
+        n.old_dof_object->n_comp(this->sys.number(), var))
+      {
+        const dof_id_type first_old_id =
+          n.old_dof_object->dof_number(this->sys.number(), var, dim);
+        std::vector<dof_id_type> old_ids(n_mixed);
+        std::iota(old_ids.begin(), old_ids.end(), first_old_id);
+
+        for (auto d_i : index_range(derivs))
+          {
+            derivs[d_i].resize(1);
+            derivs[d_i].raw_at(0) = 1;
+            derivs[d_i].raw_index(0) = old_ids[d_i];
+          }
+      }
+    else
+      {
+        std::fill(derivs.begin(), derivs.end(), 0);
+      }
+  }
+
+
+  void eval_old_dofs (const Elem & elem,
+                      unsigned int node_num,
+                      unsigned int var_num,
+                      std::vector<dof_id_type> & indices,
                       std::vector<DSNA> & values)
   {
-    LOG_SCOPE ("eval_old_dofs()", "OldSolutionValue");
+    LOG_SCOPE ("eval_old_dofs(node)", "OldSolutionCoefs");
 
-    this->check_old_context(c);
+    this->sys.get_dof_map().dof_indices(elem, node_num, indices, var_num);
 
-    const std::vector<dof_id_type> & old_dof_indices =
-      this->old_context.get_dof_indices(var);
+    std::vector<dof_id_type> old_indices;
 
-    libmesh_assert_equal_to (old_dof_indices.size(), values.size());
+    this->sys.get_dof_map().old_dof_indices(elem, node_num, old_indices, var_num);
+
+    libmesh_assert_equal_to (old_indices.size(), indices.size());
+
+    values.resize(old_indices.size());
+
+    for (auto i : index_range(values))
+      {
+        values[i].resize(1);
+        values[i].raw_at(0) = 1;
+        values[i].raw_index(0) = old_indices[i];
+      }
+  }
+
+
+  void eval_old_dofs (const Elem & elem,
+                      const FEType & fe_type,
+                      unsigned int sys_num,
+                      unsigned int var_num,
+                      std::vector<dof_id_type> & indices,
+                      std::vector<DSNA> & values)
+  {
+    LOG_SCOPE ("eval_old_dofs(elem)", "OldSolutionCoefs");
+
+    // We're only to be asked for old dofs on elements that can copy
+    // them through DO_NOTHING or through refinement.
+    const Elem & old_elem =
+      (elem.refinement_flag() == Elem::JUST_REFINED) ?
+      *elem.parent() : elem;
+
+    // If there are any element-based DOF numbers, get them
+    const unsigned int nc =
+      FEInterface::n_dofs_per_elem(fe_type, &elem);
+
+    std::vector<dof_id_type> old_dof_indices(nc);
+    indices.resize(nc);
+
+    // We should never have fewer dofs than necessary on an
+    // element unless we're getting indices on a parent element,
+    // and we should never need those indices
+    if (nc != 0)
+      {
+        libmesh_assert(old_elem.old_dof_object);
+
+        const std::pair<unsigned int, unsigned int>
+          vg_and_offset = elem.var_to_vg_and_offset(sys_num,var_num);
+        const unsigned int vg = vg_and_offset.first;
+        const unsigned int vig = vg_and_offset.second;
+
+        const unsigned int n_comp = elem.n_comp_group(sys_num,vg);
+        libmesh_assert_greater(elem.n_systems(), sys_num);
+        libmesh_assert_greater_equal(n_comp, nc);
+
+        for (unsigned int i=0; i<nc; i++)
+          {
+            const dof_id_type d_old =
+              old_elem.old_dof_object->dof_number(sys_num, vg, vig, i, n_comp);
+            const dof_id_type d_new =
+              elem.dof_number(sys_num, vg, vig, i, n_comp);
+            libmesh_assert_not_equal_to (d_old, DofObject::invalid_id);
+            libmesh_assert_not_equal_to (d_new, DofObject::invalid_id);
+
+            old_dof_indices[i] = d_old;
+            indices[i] = d_new;
+          }
+      }
+
+    values.resize(old_dof_indices.size());
 
     for (auto i : index_range(values))
       {
@@ -503,12 +687,14 @@ OldSolutionCoefs<Real, &FEMContext::point_value>::
 eval_at_point(const FEMContext & c,
               unsigned int i,
               const Point & p,
-              Real /* time */)
+              Real /* time */,
+              bool skip_context_check)
 {
   LOG_SCOPE ("eval_at_point()", "OldSolutionCoefs");
 
-  if (!this->check_old_context(c, p))
-    return 0;
+  if (!skip_context_check)
+    if (!this->check_old_context(c, p))
+      return 0;
 
   // Get finite element object
   FEGenericBase<Real> * fe = nullptr;
@@ -548,12 +734,14 @@ OldSolutionCoefs<RealGradient, &FEMContext::point_gradient>::
 eval_at_point(const FEMContext & c,
               unsigned int i,
               const Point & p,
-              Real /* time */)
+              Real /* time */,
+              bool skip_context_check)
 {
   LOG_SCOPE ("eval_at_point()", "OldSolutionCoefs");
 
-  if (!this->check_old_context(c, p))
-    return 0;
+  if (!skip_context_check)
+    if (!this->check_old_context(c, p))
+      return 0;
 
   // Get finite element object
   FEGenericBase<Real> * fe = nullptr;
@@ -596,6 +784,7 @@ eval_at_node(const FEMContext & c,
              unsigned int i,
              unsigned int /* elem_dim */,
              const Node & n,
+             bool extra_hanging_dofs,
              Real /* time */)
 {
   LOG_SCOPE ("Real eval_at_node()", "OldSolutionCoefs");
@@ -606,8 +795,16 @@ eval_at_node(const FEMContext & c,
   // Be sure to handle cases where the variable wasn't defined on
   // this node (due to changing subdomain support) or where the
   // variable has no components on this node (due to Elem order
-  // exceeding FE order)
+  // exceeding FE order) or where the old_dof_object dofs might
+  // correspond to non-vertex dofs (due to extra_hanging_dofs and
+  // refinement)
+
+  const Elem::RefinementState flag = c.get_elem().refinement_flag();
+
   if (n.old_dof_object &&
+      (!extra_hanging_dofs ||
+       flag == Elem::JUST_COARSENED ||
+       flag == Elem::DO_NOTHING) &&
       n.old_dof_object->n_vars(sys.number()) &&
       n.old_dof_object->n_comp(sys.number(), i))
     {
@@ -620,7 +817,7 @@ eval_at_node(const FEMContext & c,
       return returnval;
     }
 
-  return this->eval_at_point(c, i, n, 0);
+  return this->eval_at_point(c, i, n, 0, false);
 }
 
 
@@ -633,6 +830,7 @@ eval_at_node(const FEMContext & c,
              unsigned int i,
              unsigned int elem_dim,
              const Node & n,
+             bool extra_hanging_dofs,
              Real /* time */)
 {
   LOG_SCOPE ("RealGradient eval_at_node()", "OldSolutionCoefs");
@@ -643,8 +841,16 @@ eval_at_node(const FEMContext & c,
   // Be sure to handle cases where the variable wasn't defined on
   // this node (due to changing subdomain support) or where the
   // variable has no components on this node (due to Elem order
-  // exceeding FE order)
+  // exceeding FE order) or where the old_dof_object dofs might
+  // correspond to non-vertex dofs (due to extra_hanging_dofs and
+  // refinement)
+
+  const Elem::RefinementState flag = c.get_elem().refinement_flag();
+
   if (n.old_dof_object &&
+      (!extra_hanging_dofs ||
+       flag == Elem::JUST_COARSENED ||
+       flag == Elem::DO_NOTHING) &&
       n.old_dof_object->n_vars(sys.number()) &&
       n.old_dof_object->n_comp(sys.number(), i))
     {
@@ -660,7 +866,7 @@ eval_at_node(const FEMContext & c,
       return g;
     }
 
-  return this->eval_at_point(c, i, n, 0);
+  return this->eval_at_point(c, i, n, 0, false);
 }
 
 
@@ -676,6 +882,8 @@ eval_at_node(const FEMContext & c,
 template <typename ValIn, typename ValOut>
 class MatrixFillAction
 {
+public:
+  typedef DynamicSparseNumberArray<ValIn, dof_id_type> InsertInput;
 private:
   SparseMatrix<ValOut> & target_matrix;
 
@@ -683,16 +891,30 @@ public:
   MatrixFillAction(SparseMatrix<ValOut> & target_mat) :
     target_matrix(target_mat) {}
 
-  void insert(const FEMContext & c,
-              unsigned int var_num,
-              const DenseVector<DynamicSparseNumberArray<ValIn, dof_id_type> > & Ue)
+  void insert(dof_id_type id,
+              const DynamicSparseNumberArray<ValIn, dof_id_type> & val)
+  {
+    // Lock the target matrix since it is shared among threads.
+    {
+      Threads::spin_mutex::scoped_lock lock(Threads::spin_mtx);
+
+      const std::size_t dnsa_size = val.size();
+      for (unsigned int j = 0; j != dnsa_size; ++j)
+        {
+          const dof_id_type dof_j = val.raw_index(j);
+          const ValIn dof_val = val.raw_at(j);
+          target_matrix.set(id, dof_j, dof_val);
+        }
+    }
+  }
+
+
+  void insert(const std::vector<dof_id_type> & dof_indices,
+              const std::vector<DynamicSparseNumberArray<ValIn, dof_id_type> > & Ue)
   {
     const numeric_index_type
       begin_dof = target_matrix.row_start(),
       end_dof = target_matrix.row_stop();
-
-    const std::vector<dof_id_type> & dof_indices =
-      c.get_dof_indices(var_num);
 
     unsigned int size = Ue.size();
 
@@ -707,7 +929,7 @@ public:
           const dof_id_type dof_i = dof_indices[i];
           if ((dof_i >= begin_dof) && (dof_i < end_dof))
             {
-              const DynamicSparseNumberArray<ValIn,dof_id_type> & dnsa = Ue(i);
+              const DynamicSparseNumberArray<ValIn,dof_id_type> & dnsa = Ue[i];
               const std::size_t dnsa_size = dnsa.size();
               for (unsigned int j = 0; j != dnsa_size; ++j)
                 {
@@ -756,8 +978,8 @@ void System::projection_matrix (SparseMatrix<Number> & proj_mat) const
       OldSolutionGradientCoefs g(*this);
       MatrixFillAction<Real, Number> setter(proj_mat);
 
-      Threads::parallel_for (active_local_elem_range,
-                             ProjMatFiller(*this, f, &g, setter, vars));
+      ProjMatFiller mat_filler(*this, f, &g, setter, vars);
+      mat_filler.project(active_local_elem_range);
 
       // Set the SCALAR dof transfer entries too.
       // Note: We assume that all SCALAR dofs are on the
@@ -765,7 +987,7 @@ void System::projection_matrix (SparseMatrix<Number> & proj_mat) const
       if (this->processor_id() == (this->n_processors()-1))
         {
           const DofMap & dof_map = this->get_dof_map();
-          for (unsigned int var=0; var<this->n_vars(); var++)
+          for (auto var : make_range(this->n_vars()))
             if (this->variable(var).type().family == SCALAR)
               {
                 // We can just map SCALAR dofs directly across
@@ -905,14 +1127,14 @@ void System::project_vector (NumericVector<Number> & new_vector,
     {
       FEMFunctionWrapper<Gradient> gw(*g);
 
-      Threads::parallel_for
-        (active_local_range,
-         FEMProjector(*this, fw, &gw, setter, vars));
+      FEMProjector projector(*this, fw, &gw, setter, vars);
+      projector.project(active_local_range);
     }
   else
-    Threads::parallel_for
-      (active_local_range,
-       FEMProjector(*this, fw, nullptr, setter, vars));
+    {
+      FEMProjector projector(*this, fw, nullptr, setter, vars);
+      projector.project(active_local_range);
+    }
 
   // Also, load values into the SCALAR dofs
   // Note: We assume that all SCALAR dofs are on the
@@ -923,7 +1145,7 @@ void System::project_vector (NumericVector<Number> & new_vector,
       FEMContext context( *this );
 
       const DofMap & dof_map = this->get_dof_map();
-      for (unsigned int var=0; var<this->n_vars(); var++)
+      for (auto var : make_range(this->n_vars()))
         if (this->variable(var).type().family == SCALAR)
           {
             // FIXME: We reinit with an arbitrary element in case the user
@@ -949,12 +1171,50 @@ void System::project_vector (NumericVector<Number> & new_vector,
 
   new_vector.close();
 
+  // Look for spline bases, in which case we need to backtrack
+  // to calculate the spline DoF values.
+  std::vector<const Variable *> rational_vars;
+  for (auto varnum : vars)
+    {
+      const Variable & var = this->get_dof_map().variable(varnum);
+      if (var.type().family == RATIONAL_BERNSTEIN)
+        rational_vars.push_back(&var);
+    }
+
+  // Okay, but are we really using any *spline* bases, or just
+  // unconstrained rational bases?
+  bool using_spline_bases = false;
+  if (!rational_vars.empty())
+    {
+      // Look for a spline node: a NodeElem with a rational variable
+      // on it.
+      for (auto & elem : active_local_range)
+        if (elem->type() == NODEELEM)
+          for (auto rational_var : rational_vars)
+            if (rational_var->active_on_subdomain(elem->subdomain_id()))
+              {
+                using_spline_bases = true;
+                goto checked_on_splines;
+              }
+    }
+
+checked_on_splines:
+
+  // Not every processor may have a NodeElem, especially while
+  // we're not partitioning them efficiently yet.
+  this->comm().max(using_spline_bases);
+
+  if (using_spline_bases)
+    this->solve_for_unconstrained_dofs(new_vector, is_adjoint);
+
 #ifdef LIBMESH_ENABLE_CONSTRAINTS
   if (is_adjoint == -1)
     this->get_dof_map().enforce_constraints_exactly(*this, &new_vector);
   else if (is_adjoint >= 0)
     this->get_dof_map().enforce_adjoint_constraints_exactly(new_vector,
                                                             is_adjoint);
+#else
+  libmesh_ignore(is_adjoint);
 #endif
 }
 
@@ -1045,6 +1305,8 @@ void System::boundary_project_vector (const std::set<boundary_id_type> & b,
   else if (is_adjoint >= 0)
     this->get_dof_map().enforce_adjoint_constraints_exactly(new_vector,
                                                             is_adjoint);
+#else
+  libmesh_ignore(is_adjoint);
 #endif
 }
 
@@ -1134,8 +1396,18 @@ void BuildProjectionList::operator()(const ConstElemRange & range)
                           const unsigned int n_comp =
                             old_dofs->n_comp_group(sysnum, vg);
                           for (unsigned int c=0; c != n_comp; ++c)
-                            di.push_back
-                              (old_dofs->dof_number(sysnum, vg, vig, c, n_comp));
+                            {
+                              const dof_id_type old_id =
+                                old_dofs->dof_number(sysnum, vg, vig,
+                                                     c, n_comp);
+
+                              // We should either have no old id
+                              // (e.g. on a newly expanded subdomain)
+                              // or an id from the old system.
+                              libmesh_assert(old_id < dof_map.n_old_dofs() ||
+                                             old_id == DofObject::invalid_id);
+                              di.push_back(old_id);
+                            }
                         }
                     }
                 }
@@ -1159,9 +1431,19 @@ void BuildProjectionList::operator()(const ConstElemRange & range)
       else
         dof_map.old_dof_indices (elem, di);
 
-      for (std::size_t i=0; i != di.size(); ++i)
-        if (di[i] < first_old_dof || di[i] >= end_old_dof)
-          this->send_list.push_back(di[i]);
+      for (auto di_i : di)
+        {
+          // If we've just expanded a subdomain for a
+          // subdomain-restricted variable, then we may have an
+          // old_dof_object that doesn't have an old DoF for every
+          // local index.
+          if (di_i == DofObject::invalid_id)
+            continue;
+
+          libmesh_assert_less(di_i, dof_map.n_old_dofs());
+          if (di_i < first_old_dof || di_i >= end_old_dof)
+            this->send_list.push_back(di_i);
+        }
     }  // end elem loop
 }
 
@@ -1211,7 +1493,7 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
 
 
   // Loop over all the variables we've been requested to project
-  for (std::size_t v=0; v!=variables.size(); v++)
+  for (auto v : make_range(variables.size()))
     {
       const unsigned int var = variables[v];
 
@@ -1351,9 +1633,6 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
           std::vector<char> dof_is_fixed(n_dofs, false); // bools
           std::vector<int> free_dof(n_dofs, 0);
 
-          // The element type
-          const ElemType elem_type = elem->type();
-
           // Zero the interpolated values
           Ue.resize (n_dofs); Ue.zero();
 
@@ -1369,9 +1648,11 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
             {
               // FIXME: this should go through the DofMap,
               // not duplicate dof_indices code badly!
+
+              // This call takes into account elem->p_level() internally.
               const unsigned int nc =
-                FEInterface::n_dofs_at_node (dim, fe_type, elem_type,
-                                             n);
+                FEInterface::n_dofs_at_node (fe_type, elem, n);
+
               if ((!elem->is_vertex(n) || !is_boundary_node[n]) &&
                   !is_boundary_nodeset[n])
                 {
@@ -1408,6 +1689,7 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
                   Ue(current_dof) = grad(0);
                   dof_is_fixed[current_dof] = true;
                   current_dof++;
+#if LIBMESH_DIM > 1
                   if (dim > 1)
                     {
                       // We'll finite difference mixed derivatives
@@ -1431,6 +1713,7 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
                       dof_is_fixed[current_dof] = true;
                       current_dof++;
 
+#if LIBMESH_DIM > 2
                       if (dim > 2)
                         {
                           // z derivative
@@ -1493,7 +1776,9 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
                           dof_is_fixed[current_dof] = true;
                           current_dof++;
                         }
+#endif // LIBMESH_DIM > 2
                     }
+#endif // LIBMESH_DIM > 1
                 }
               // Assume that other C_ONE elements have a single nodal
               // value shape function and nodal gradient component
@@ -1536,7 +1821,7 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
                 // Some edge dofs are on nodes and already
                 // fixed, others are free to calculate
                 unsigned int free_dofs = 0;
-                for (auto i : IntRange<unsigned int>(0, n_side_dofs))
+                for (auto i : make_range(n_side_dofs))
                   if (!dof_is_fixed[side_dofs[i]])
                     free_dof[free_dofs++] = i;
 
@@ -1740,6 +2025,72 @@ void BoundaryProjectSolution::operator()(const ConstElemRange & range) const
           }
         }  // end elem loop
     } // end variables loop
+}
+
+
+void System::solve_for_unconstrained_dofs(NumericVector<Number> & vec,
+                                          int is_adjoint) const
+{
+  const DofMap & dof_map = this->get_dof_map();
+
+  std::unique_ptr<SparseMatrix<Number>> mat =
+    SparseMatrix<Number>::build(this->comm());
+
+  std::unique_ptr<SparsityPattern::Build> sp;
+
+  if (dof_map.computed_sparsity_already())
+    dof_map.update_sparsity_pattern(*mat);
+  else
+    {
+      mat->attach_dof_map(dof_map);
+      sp = dof_map.build_sparsity(this->get_mesh());
+      mat->attach_sparsity_pattern(*sp);
+    }
+
+  mat->init();
+
+  libmesh_assert_equal_to(vec.size(), dof_map.n_dofs());
+  libmesh_assert_equal_to(vec.local_size(), dof_map.n_local_dofs());
+
+  std::unique_ptr<NumericVector<Number>> rhs =
+    NumericVector<Number>::build(this->comm());
+
+  rhs->init(dof_map.n_dofs(), dof_map.n_local_dofs(), false,
+            PARALLEL);
+
+  // Here we start with the unconstrained (and indeterminate) linear
+  // system, K*u = f, where K is the identity matrix for constrained
+  // DoFs and 0 elsewhere, and f is the current solution values for
+  // constrained DoFs and 0 elsewhere.
+  // We then apply the usual heterogeneous constraint matrix C and
+  // offset h, where u = C*x + h,
+  // to get C^T*K*C*x = C^T*f - C^T*K*h
+  // - a constrained and no-longer-singular system that finds the
+  // closest approximation for the unconstrained degrees of freedom.
+
+  for (dof_id_type d : IntRange<dof_id_type>(dof_map.first_dof(),
+                                             dof_map.end_dof()))
+    {
+      if (dof_map.is_constrained_dof(d))
+        {
+          DenseMatrix<Number> K(1,1);
+          DenseVector<Number> F(1);
+          std::vector<dof_id_type> dof_indices(1, d);
+          K(0,0) = 1;
+          F(0) = (*this->solution)(d);
+          dof_map.heterogenously_constrain_element_matrix_and_vector
+            (K, F, dof_indices, false, is_adjoint);
+          mat->add_matrix(K, dof_indices);
+          rhs->add_vector(F, dof_indices);
+        }
+    }
+
+  std::unique_ptr<LinearSolver<Number>> linear_solver =
+    LinearSolver<Number>::build(this->comm());
+
+  linear_solver->solve(*mat, vec, *rhs,
+                       double(this->get_equation_systems().parameters.get<Real>("linear solver tolerance")),
+                       this->get_equation_systems().parameters.get<unsigned int>("linear solver maximum iterations"));
 }
 
 

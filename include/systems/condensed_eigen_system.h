@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -48,12 +48,22 @@ class CondensedEigenSystem : public EigenSystem
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   CondensedEigenSystem (EquationSystems & es,
                         const std::string & name_in,
                         const unsigned int number_in);
+
+  /**
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - The destructor is defaulted out-of-line.
+   */
+  CondensedEigenSystem (const CondensedEigenSystem &) = delete;
+  CondensedEigenSystem & operator= (const CondensedEigenSystem &) = delete;
+  CondensedEigenSystem (CondensedEigenSystem &&) = default;
+  CondensedEigenSystem & operator= (CondensedEigenSystem &&) = delete;
+  virtual ~CondensedEigenSystem ();
 
   /**
    * The type of system.
@@ -107,14 +117,30 @@ public:
   virtual std::pair<Real, Real> get_eigenpair(dof_id_type i) override;
 
   /**
-   * The (condensed) system matrix for standard eigenvalue problems.
+   * \returns The system matrix used for standard eigenvalue problems
    */
-  std::unique_ptr<SparseMatrix<Number>> condensed_matrix_A;
+  SparseMatrix<Number> & get_condensed_matrix_A() const;
+
+  /**
+   * \returns The second system matrix used for generalized eigenvalue problems.
+   */
+  SparseMatrix<Number> & get_condensed_matrix_B() const;
+
+  /**
+   * The (condensed) system matrix for standard eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_condensed_matrix_A() instead.
+   */
+  SparseMatrix<Number> * condensed_matrix_A;
 
   /**
    * A second (condensed) system matrix for generalized eigenvalue problems.
+   *
+   * Public access to this member variable will be deprecated in
+   * the future! Use get_condensed_matrix_B() instead.
    */
-  std::unique_ptr<SparseMatrix<Number>> condensed_matrix_B;
+  SparseMatrix<Number> * condensed_matrix_B;
 
   /**
    * Vector storing the local dof indices that will not be condensed.

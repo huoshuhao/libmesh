@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -30,12 +30,13 @@
 // Local includes
 #include "libmesh/numeric_vector.h"
 
-// C++ includes
-#include <cstdio> // for std::sprintf
-
 // Laspack includes
 #include <operats.h>
 #include <qvector.h>
+
+// C++ includes
+#include <cstdio> // for std::sprintf
+#include <limits>
 
 namespace libMesh
 {
@@ -169,6 +170,8 @@ public:
 
   virtual NumericVector<T> & operator -= (const NumericVector<T> & v) override;
 
+  virtual NumericVector<T> & operator *= (const NumericVector<T> & v) override;
+
   virtual NumericVector<T> & operator /= (const NumericVector<T> & v) override;
 
   virtual void reciprocal() override;
@@ -224,6 +227,8 @@ public:
                                const NumericVector<T> & vec2) override;
 
   virtual void swap (NumericVector<T> & v) override;
+
+  virtual std::size_t max_allowed_id() const override;
 
 private:
 
@@ -554,6 +559,16 @@ void LaspackVector<T>::swap (NumericVector<T> & other)
   // data on the heap
 
   std::swap(_vec.Cmp, v._vec.Cmp);
+}
+
+
+
+template <typename T>
+inline
+std::size_t LaspackVector<T>::max_allowed_id () const
+{
+  // The QVector type declares a "size_t Dim;"
+  return std::numeric_limits<std::size_t>::max();
 }
 
 

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -17,8 +17,6 @@
 
 
 
-// C++ includes
-
 // Local includes
 #include "libmesh/newmark_system.h"
 #include "libmesh/equation_systems.h"
@@ -29,9 +27,6 @@
 namespace libMesh
 {
 
-
-
-
 // ------------------------------------------------------------
 // NewmarkSystem static members
 const Real NewmarkSystem::_default_alpha    = .25;
@@ -40,8 +35,6 @@ const Real NewmarkSystem::_default_timestep = 1.;
 
 
 
-// ------------------------------------------------------------
-// NewmarkSystem implementation
 NewmarkSystem::NewmarkSystem (EquationSystems & es,
                               const std::string & name_in,
                               const unsigned int number_in) :
@@ -95,10 +88,7 @@ NewmarkSystem::NewmarkSystem (EquationSystems & es,
 
 
 
-NewmarkSystem::~NewmarkSystem ()
-{
-  this->clear();
-}
+NewmarkSystem::~NewmarkSystem () = default;
 
 
 

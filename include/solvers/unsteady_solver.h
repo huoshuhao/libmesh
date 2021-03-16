@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -21,9 +21,7 @@
 #define LIBMESH_UNSTEADY_SOLVER_H
 
 // Local includes
-#include "libmesh/auto_ptr.h" // deprecated
 #include "libmesh/libmesh_common.h"
-#include "libmesh/numeric_vector.h"
 #include "libmesh/time_solver.h"
 
 // C++ includes
@@ -31,6 +29,9 @@
 
 namespace libMesh
 {
+
+// Forward declarations
+template <typename T> class NumericVector;
 
 /**
  * This is a generic class that defines a solver to handle
@@ -95,6 +96,14 @@ public:
    */
   virtual void advance_timestep () override;
 
+  void update();
+
+  /**
+   * This method solves for the adjoint solution at the next adjoint timestep
+   * (or a steady state adjoint solve)
+   */
+  virtual std::pair<unsigned int, Real> adjoint_solve (const QoISet & qoi_indices) override;
+
   /**
    * This method advances the adjoint solution to the previous
    * timestep, after an adjoint_solve() has been performed.  This will
@@ -107,6 +116,27 @@ public:
    * system.time
    */
   virtual void retrieve_timestep () override;
+
+  /**
+   * A method to integrate the system::QoI functionals.
+   */
+  virtual void integrate_qoi_timestep() override;
+
+  /**
+   * A method to integrate the adjoint sensitivity w.r.t a given parameter
+   * vector. int_{tstep_start}^{tstep_end} dQ/dp dt = int_{tstep_start}^{tstep_end} (\partialQ / \partial p) - ( \partial R (u,z) / \partial p ) dt
+   * The trapezoidal rule is used to numerically integrate the timestep.
+   */
+  virtual void integrate_adjoint_sensitivity(const QoISet & qois, const ParameterVector & parameter_vector, SensitivityData & sensitivities) override;
+
+  /**
+   * A method to compute the adjoint refinement error estimate at the current timestep.
+   * int_{tstep_start}^{tstep_end} R(u^h,z) dt
+   * The user provides an initialized ARefEE object.
+   * Fills in an ErrorVector that contains the weighted sum of errors from all the QoIs and can be used to guide AMR.
+   * CURRENTLY ONLY SUPPORTED for Backward Euler.
+   */
+  virtual void integrate_adjoint_refinement_error_estimate(AdjointRefinementEstimator & /*adjoint_refinement_error_estimator*/, ErrorVector & /*QoI_elementwise_error*/) override;
 
   /**
    * This method should return the expected convergence order of the
@@ -134,8 +164,10 @@ public:
 
   /**
    * Serial vector of _system.get_vector("_old_nonlinear_solution")
+   * This is a shared_ptr so that it can be shared between different
+   * derived class instances, as in e.g. AdaptiveTimeSolver.
    */
-  std::unique_ptr<NumericVector<Number>> old_local_nonlinear_solution;
+  std::shared_ptr<NumericVector<Number>> old_local_nonlinear_solution;
 
   /**
    * Computes the size of ||u^{n+1} - u^{n}|| in some norm.
@@ -153,6 +185,14 @@ public:
    */
   virtual bool is_steady() const override { return false; }
 
+  /**
+   * A setter for the first_adjoint_step boolean. Needed for nested time solvers.
+   */
+  void set_first_adjoint_step(bool first_adjoint_step_setting)
+  {
+    first_adjoint_step = first_adjoint_step_setting;
+  }
+
 protected:
 
   /**
@@ -166,6 +206,18 @@ protected:
    * (when the primal solution is to be used to set adjoint boundary conditions) and false thereafter
    */
   bool first_adjoint_step;
+
+  /**
+   * A vector of pointers to vectors holding the adjoint solution at the last time step
+   */
+  std::vector< std::unique_ptr<NumericVector<Number>> > old_adjoints;
+
+  /**
+   * We will need to move the system.time around to ensure that residuals
+   * are built with the right deltat and the right time.
+   */
+  Real last_step_deltat;
+  Real next_step_deltat;
 };
 
 

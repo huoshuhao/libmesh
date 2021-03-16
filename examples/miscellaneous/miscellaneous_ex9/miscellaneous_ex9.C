@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -105,11 +105,13 @@ int main (int argc, char ** argv)
   libmesh_example_requires(false, "--enable-exodus");
 #endif
 
-  // The sparsity augmentation code requires PETSc
-  libmesh_example_requires(libMesh::default_solver_package() == PETSC_SOLVERS, "--enable-petsc");
-
   // Skip this 3D example if libMesh was compiled as 1D or 2D-only.
   libmesh_example_requires(3 <= LIBMESH_DIM, "3D support");
+
+  // We use Dirichlet boundary conditions here
+#ifndef LIBMESH_ENABLE_DIRICHLET
+  libmesh_example_requires(false, "--enable-dirichlet");
+#endif
 
   GetPot command_line (argc, argv);
 
@@ -129,6 +131,7 @@ int main (int argc, char ** argv)
   // lower_to_upper, hence set assemble_before_solve = false
   system.assemble_before_solve = false;
 
+#ifdef LIBMESH_ENABLE_DIRICHLET
   // Impose zero Dirichlet boundary condition on MAX_Z_BOUNDARY
   std::set<boundary_id_type> boundary_ids;
   boundary_ids.insert(MAX_Z_BOUNDARY);
@@ -141,6 +144,7 @@ int main (int argc, char ** argv)
   DirichletBoundary dirichlet_bc(boundary_ids, variables, zf,
                                  LOCAL_VARIABLE_ORDER);
   system.get_dof_map().add_dirichlet_boundary(dirichlet_bc);
+#endif // LIBMESH_ENABLE_DIRICHLET
 
   // Attach an object to the DofMap that will augment the sparsity pattern
   // due to the degrees-of-freedom on the "crack"
@@ -249,6 +253,7 @@ void assemble_poisson(EquationSystems & es,
   DenseMatrix<Number> Knn;
 
   std::vector<dof_id_type> dof_indices;
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
 
   for (const auto & elem : mesh.active_local_element_ptr_range())
     {
@@ -300,8 +305,9 @@ void assemble_poisson(EquationSystems & es,
                   const Elem * neighbor = ltu_it->second;
 
                   std::vector<Point> qface_neighbor_points;
-                  FEInterface::inverse_map (elem->dim(), fe->get_fe_type(),
-                                            neighbor, qface_points, qface_neighbor_points);
+                  FEMap::inverse_map (elem->dim(), neighbor,
+                                      qface_points,
+                                      qface_neighbor_points);
                   fe_neighbor_face->reinit(neighbor, &qface_neighbor_points);
 
                   std::vector<dof_id_type> neighbor_dof_indices;
@@ -337,17 +343,17 @@ void assemble_poisson(EquationSystems & es,
                       for (unsigned int j=0; j<n_dofs; j++)
                         Kne(i,j) += JxW_face[qp] * (1./R)*(phi_neighbor_face[i][qp] * phi_face[j][qp]);
 
-                  system.matrix->add_matrix(Kne, neighbor_dof_indices, dof_indices);
-                  system.matrix->add_matrix(Ken, dof_indices, neighbor_dof_indices);
-                  system.matrix->add_matrix(Kee, dof_indices);
-                  system.matrix->add_matrix(Knn, neighbor_dof_indices);
+                  matrix.add_matrix(Kne, neighbor_dof_indices, dof_indices);
+                  matrix.add_matrix(Ken, dof_indices, neighbor_dof_indices);
+                  matrix.add_matrix(Kee, dof_indices);
+                  matrix.add_matrix(Knn, neighbor_dof_indices);
                 }
             }
       }
 
       dof_map.constrain_element_matrix_and_vector (Ke, Fe, dof_indices);
 
-      system.matrix->add_matrix (Ke, dof_indices);
+      matrix.add_matrix         (Ke, dof_indices);
       system.rhs->add_vector    (Fe, dof_indices);
     }
 }

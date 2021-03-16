@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -32,29 +32,26 @@ namespace libMesh
 {
 
 
-// ------------------------------------------------------------
-// LinearImplicitSystem implementation
 LinearImplicitSystem::LinearImplicitSystem (EquationSystems & es,
                                             const std::string & name_in,
                                             const unsigned int number_in) :
 
   Parent                 (es, name_in, number_in),
-  linear_solver          (LinearSolver<Number>::build(es.comm())),
   _n_linear_iterations   (0),
   _final_linear_residual (1.e20),
   _shell_matrix(nullptr),
   _subset(nullptr),
   _subset_solve_mode(SUBSET_ZERO)
 {
+  // linear_solver is now in the ImplicitSystem base class, but we are
+  // going to keep using it basically the way we did before it was
+  // moved.
+  linear_solver = LinearSolver<Number>::build(es.comm());
 }
 
 
 
-LinearImplicitSystem::~LinearImplicitSystem ()
-{
-  // Clear data
-  this->clear();
-}
+LinearImplicitSystem::~LinearImplicitSystem () = default;
 
 
 
@@ -122,8 +119,8 @@ void LinearImplicitSystem::solve ()
     linear_solver->init();
 
   // Get the user-specified linear solver tolerance
-  const Real tol            =
-    es.parameters.get<Real>("linear solver tolerance");
+  const double tol =
+    double(es.parameters.get<Real>("linear solver tolerance"));
 
   // Get the user-specified maximum # of linear solver iterations
   const unsigned int maxits =
@@ -353,12 +350,6 @@ void LinearImplicitSystem::attach_shell_matrix (ShellMatrix<Number> * shell_matr
 LinearSolver<Number> * LinearImplicitSystem::get_linear_solver() const
 {
   return linear_solver.get();
-}
-
-
-
-void LinearImplicitSystem::release_linear_solver(LinearSolver<Number> *) const
-{
 }
 
 

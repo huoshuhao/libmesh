@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -18,6 +18,7 @@
 
 // library configuration
 #include "libmesh/libmesh_config.h"
+#include "libmesh/libmesh_logging.h"
 
 // System includes
 #include <sys/time.h>
@@ -147,5 +148,46 @@ int Utility::mkdir(const char* pathname) {
 #endif
 
 }
+
+
+std::string Utility::unzip_file (const std::string & name)
+{
+  std::ostringstream pid_suffix;
+  pid_suffix << '_' << getpid();
+
+  std::string new_name = name;
+  if (name.size() - name.rfind(".bz2") == 4)
+    {
+#ifdef LIBMESH_HAVE_BZIP
+      new_name.erase(new_name.end() - 4, new_name.end());
+      new_name += pid_suffix.str();
+      LOG_SCOPE("system(bunzip2)", "Utility");
+      std::string system_string = "bunzip2 -f -k -c ";
+      system_string += name + " > " + new_name;
+      if (std::system(system_string.c_str()))
+        libmesh_file_error(system_string);
+#else
+      libmesh_error_msg("ERROR: need bzip2/bunzip2 to open .bz2 file " << name);
+#endif
+    }
+  else if (name.size() - name.rfind(".xz") == 3)
+    {
+#ifdef LIBMESH_HAVE_XZ
+      new_name.erase(new_name.end() - 3, new_name.end());
+      new_name += pid_suffix.str();
+      LOG_SCOPE("system(xz -d)", "Utility");
+      std::string system_string = "xz -f -d -k -c ";
+      system_string += name + " > " + new_name;
+      if (std::system(system_string.c_str()))
+        libmesh_file_error(system_string);
+#else
+      libmesh_error_msg("ERROR: need xz to open .xz file " << name);
+#endif
+    }
+  return new_name;
+}
+
+
+
 
 } // namespace libMesh

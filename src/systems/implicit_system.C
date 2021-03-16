@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -17,8 +17,6 @@
 
 
 
-// C++ includes
-
 // Local includes
 #include "libmesh/dof_map.h"
 #include "libmesh/equation_systems.h"
@@ -33,34 +31,25 @@
 #include "libmesh/qoi_set.h"
 #include "libmesh/sensitivity_data.h"
 #include "libmesh/sparse_matrix.h"
+#include "libmesh/diagonal_matrix.h"
+#include "libmesh/utility.h"
 
 namespace libMesh
 {
 
-// ------------------------------------------------------------
-// ImplicitSystem implementation
 ImplicitSystem::ImplicitSystem (EquationSystems & es,
                                 const std::string & name_in,
                                 const unsigned int number_in) :
 
   Parent            (es, name_in, number_in),
   matrix            (nullptr),
-  zero_out_matrix_and_rhs(true),
-  _can_add_matrices (true)
+  zero_out_matrix_and_rhs(true)
 {
-  // Add the system matrix.
-  this->add_system_matrix ();
 }
 
 
 
-ImplicitSystem::~ImplicitSystem ()
-{
-  // Clear data
-  this->clear();
-
-  remove_matrix("System Matrix");
-}
+ImplicitSystem::~ImplicitSystem () = default;
 
 
 
@@ -69,114 +58,8 @@ void ImplicitSystem::clear ()
   // clear the parent data
   Parent::clear();
 
-  // clear any user-added matrices
-  {
-    for (auto & pr : _matrices)
-      {
-        pr.second->clear ();
-        delete pr.second;
-        pr.second = nullptr;
-      }
-
-    _matrices.clear();
-    _can_add_matrices = true;
-  }
-
   // Restore us to a "basic" state
-  this->add_system_matrix ();
-}
-
-
-
-void ImplicitSystem::init_data ()
-{
-  // initialize parent data
-  Parent::init_data();
-
-  // Clear any existing matrices
-  for (auto & pr : _matrices)
-    pr.second->clear();
-
-  // Initialize the matrices for the system
-  this->init_matrices ();
-}
-
-
-
-void ImplicitSystem::init_matrices ()
-{
-  libmesh_assert(matrix);
-
-  // Check for quick return in case the system matrix
-  // (and by extension all the matrices) has already
-  // been initialized
-  if (matrix->initialized())
-    return;
-
-  // Get a reference to the DofMap
-  DofMap & dof_map = this->get_dof_map();
-
-  // no chance to add other matrices
-  _can_add_matrices = false;
-
-  // Tell the matrices about the dof map, and vice versa
-  for (auto & pr : _matrices)
-    {
-      SparseMatrix<Number> & m = *(pr.second);
-      libmesh_assert (!m.initialized());
-
-      // We want to allow repeated init() on systems, but we don't
-      // want to attach the same matrix to the DofMap twice
-      if (!dof_map.is_attached(m))
-        dof_map.attach_matrix (m);
-    }
-
-  // Compute the sparsity pattern for the current
-  // mesh and DOF distribution.  This also updates
-  // additional matrices, \p DofMap now knows them
-  dof_map.compute_sparsity (this->get_mesh());
-
-  // Initialize matrices
-  for (auto & pr : _matrices)
-    pr.second->init ();
-
-  // Set the additional matrices to 0.
-  for (auto & pr : _matrices)
-    pr.second->zero ();
-}
-
-
-
-void ImplicitSystem::reinit ()
-{
-  // initialize parent data
-  Parent::reinit();
-
-  // Get a reference to the DofMap
-  DofMap & dof_map = this->get_dof_map();
-
-  // Clear the matrices
-  for (auto & pr : _matrices)
-    {
-      pr.second->clear();
-      pr.second->attach_dof_map (dof_map);
-    }
-
-  // Clear the sparsity pattern
-  this->get_dof_map().clear_sparsity();
-
-  // Compute the sparsity pattern for the current
-  // mesh and DOF distribution.  This also updates
-  // additional matrices, \p DofMap now knows them
-  dof_map.compute_sparsity (this->get_mesh());
-
-  // Initialize matrices
-  for (auto & pr : _matrices)
-    pr.second->init ();
-
-  // Set the additional matrices to 0.
-  for (auto & pr : _matrices)
-    pr.second->zero ();
+  matrix = nullptr;
 }
 
 
@@ -200,97 +83,13 @@ void ImplicitSystem::assemble ()
 
 
 
-SparseMatrix<Number> & ImplicitSystem::add_matrix (const std::string & mat_name)
+void ImplicitSystem::add_matrices ()
 {
-  // only add matrices before initializing...
-  if (!_can_add_matrices)
-    libmesh_error_msg("ERROR: Too late.  Cannot add matrices to the system after initialization"
-                      << "\n any more.  You should have done this earlier.");
+  Parent::add_matrices();
 
-  // Return the matrix if it is already there.
-  if (this->have_matrix(mat_name))
-    return *(_matrices[mat_name]);
-
-  // Otherwise build the matrix and return it.
-  SparseMatrix<Number> * buf = SparseMatrix<Number>::build(this->comm()).release();
-  _matrices.insert (std::make_pair (mat_name, buf));
-
-  return *buf;
-}
-
-
-void ImplicitSystem::remove_matrix (const std::string & mat_name)
-{
-  matrices_iterator pos = _matrices.find (mat_name);
-
-  //Return if the matrix does not exist
-  if (pos == _matrices.end())
-    return;
-
-  delete pos->second;
-
-  _matrices.erase(pos);
-}
-
-
-
-const SparseMatrix<Number> * ImplicitSystem::request_matrix (const std::string & mat_name) const
-{
-  // Make sure the matrix exists
-  const_matrices_iterator pos = _matrices.find (mat_name);
-
-  if (pos == _matrices.end())
-    return nullptr;
-
-  return pos->second;
-}
-
-
-
-SparseMatrix<Number> * ImplicitSystem::request_matrix (const std::string & mat_name)
-{
-  // Make sure the matrix exists
-  matrices_iterator pos = _matrices.find (mat_name);
-
-  if (pos == _matrices.end())
-    return nullptr;
-
-  return pos->second;
-}
-
-
-
-const SparseMatrix<Number> & ImplicitSystem::get_matrix (const std::string & mat_name) const
-{
-  // Make sure the matrix exists
-  const_matrices_iterator pos = _matrices.find (mat_name);
-
-  if (pos == _matrices.end())
-    libmesh_error_msg("ERROR: matrix " << mat_name << " does not exist in this system!");
-
-  return *(pos->second);
-}
-
-
-
-SparseMatrix<Number> & ImplicitSystem::get_matrix (const std::string & mat_name)
-{
-  // Make sure the matrix exists
-  matrices_iterator pos = _matrices.find (mat_name);
-
-  if (pos == _matrices.end())
-    libmesh_error_msg("ERROR: matrix " << mat_name << " does not exist in this system!");
-
-  return *(pos->second);
-}
-
-
-
-void ImplicitSystem::add_system_matrix ()
-{
   // Possible that we cleared the _matrices but
   // forgot to update the matrix pointer?
-  if (_matrices.empty())
+  if (this->n_matrices() == 0)
     matrix = nullptr;
 
   // Only need to add the matrix if it isn't there
@@ -330,7 +129,7 @@ ImplicitSystem::sensitivity_solve (const ParameterVector & parameters)
     }
 
   // The sensitivity problem is linear
-  LinearSolver<Number> * linear_solver = this->get_linear_solver();
+  LinearSolver<Number> * solver = this->get_linear_solver();
 
   // Our iteration counts and residuals will be sums of the individual
   // results
@@ -340,14 +139,14 @@ ImplicitSystem::sensitivity_solve (const ParameterVector & parameters)
 
   // Solve the linear system.
   SparseMatrix<Number> * pc = this->request_matrix("Preconditioner");
-  for (auto p : IntRange<unsigned int>(0, parameters.size()))
+  for (auto p : make_range(parameters.size()))
     {
       std::pair<unsigned int, Real> rval =
-        linear_solver->solve (*matrix, pc,
-                              this->add_sensitivity_solution(p),
-                              this->get_sensitivity_rhs(p),
-                              solver_params.second,
-                              solver_params.first);
+        solver->solve (*matrix, pc,
+                       this->add_sensitivity_solution(p),
+                       this->get_sensitivity_rhs(p),
+                       double(solver_params.second),
+                       solver_params.first);
 
       totalrval.first  += rval.first;
       totalrval.second += rval.second;
@@ -355,13 +154,11 @@ ImplicitSystem::sensitivity_solve (const ParameterVector & parameters)
 
   // The linear solver may not have fit our constraints exactly
 #ifdef LIBMESH_ENABLE_CONSTRAINTS
-  for (auto p : IntRange<unsigned int>(0, parameters.size()))
+  for (auto p : make_range(parameters.size()))
     this->get_dof_map().enforce_constraints_exactly
       (*this, &this->get_sensitivity_solution(p),
        /* homogeneous = */ true);
 #endif
-
-  this->release_linear_solver(linear_solver);
 
   return totalrval;
 }
@@ -380,7 +177,7 @@ ImplicitSystem::adjoint_solve (const QoISet & qoi_indices)
                     /* get_jacobian = */ true);
 
   // The adjoint problem is linear
-  LinearSolver<Number> * linear_solver = this->get_linear_solver();
+  LinearSolver<Number> * solver = this->get_linear_solver();
 
   // Reset and build the RHS from the QOI derivative
   this->assemble_qoi_derivative(qoi_indices,
@@ -393,24 +190,22 @@ ImplicitSystem::adjoint_solve (const QoISet & qoi_indices)
     this->get_linear_solve_parameters();
   std::pair<unsigned int, Real> totalrval = std::make_pair(0,0.0);
 
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       {
         const std::pair<unsigned int, Real> rval =
-          linear_solver->adjoint_solve (*matrix, this->add_adjoint_solution(i),
-                                        this->get_adjoint_rhs(i),
-                                        solver_params.second,
-                                        solver_params.first);
+          solver->adjoint_solve (*matrix, this->add_adjoint_solution(i),
+                                 this->get_adjoint_rhs(i),
+                                 double(solver_params.second),
+                                 solver_params.first);
 
         totalrval.first  += rval.first;
         totalrval.second += rval.second;
       }
 
-  this->release_linear_solver(linear_solver);
-
   // The linear solver may not have fit our constraints exactly
 #ifdef LIBMESH_ENABLE_CONSTRAINTS
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       this->get_dof_map().enforce_adjoint_constraints_exactly
         (this->get_adjoint_solution(i), i);
@@ -443,9 +238,11 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
 
   // FIXME: The derivation here does not yet take adjoint boundary
   // conditions into account.
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+#ifdef LIBMESH_ENABLE_DIRICHLET
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       libmesh_assert(!this->get_dof_map().has_adjoint_dirichlet_boundaries(i));
+#endif
 
   // We'll assemble the rhs first, because the R'' term will require
   // perturbing the jacobian
@@ -454,7 +251,7 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
   // any good reasons why users might want to save these:
 
   std::vector<std::unique_ptr<NumericVector<Number>>> temprhs(this->n_qois());
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       temprhs[i] = this->rhs->zero_clone();
 
@@ -485,7 +282,7 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
   this->assemble_qoi_derivative(qoi_indices,
                                 /* include_liftfunc = */ false,
                                 /* apply_constraints = */ true);
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       {
         this->get_adjoint_rhs(i).close();
@@ -505,7 +302,7 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
   this->assemble_qoi_derivative(qoi_indices,
                                 /* include_liftfunc = */ false,
                                 /* apply_constraints = */ true);
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       {
         this->get_adjoint_rhs(i).close();
@@ -530,7 +327,7 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
   }
 
   // The weighted adjoint-adjoint problem is linear
-  LinearSolver<Number> * linear_solver = this->get_linear_solver();
+  LinearSolver<Number> * solver = this->get_linear_solver();
 
   // Our iteration counts and residuals will be sums of the individual
   // results
@@ -538,24 +335,22 @@ ImplicitSystem::weighted_sensitivity_adjoint_solve (const ParameterVector & para
     this->get_linear_solve_parameters();
   std::pair<unsigned int, Real> totalrval = std::make_pair(0,0.0);
 
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       {
         const std::pair<unsigned int, Real> rval =
-          linear_solver->solve (*matrix, this->add_weighted_sensitivity_adjoint_solution(i),
-                                *(temprhs[i]),
-                                solver_params.second,
-                                solver_params.first);
+          solver->solve (*matrix, this->add_weighted_sensitivity_adjoint_solution(i),
+                         *(temprhs[i]),
+                         double(solver_params.second),
+                         solver_params.first);
 
         totalrval.first  += rval.first;
         totalrval.second += rval.second;
       }
 
-  this->release_linear_solver(linear_solver);
-
   // The linear solver may not have fit our constraints exactly
 #ifdef LIBMESH_ENABLE_CONSTRAINTS
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       this->get_dof_map().enforce_constraints_exactly
         (*this, &this->get_weighted_sensitivity_adjoint_solution(i),
@@ -626,18 +421,16 @@ ImplicitSystem::weighted_sensitivity_solve (const ParameterVector & parameters_i
   this->matrix->close();
 
   // The weighted sensitivity problem is linear
-  LinearSolver<Number> * linear_solver = this->get_linear_solver();
+  LinearSolver<Number> * solver = this->get_linear_solver();
 
   std::pair<unsigned int, Real> solver_params =
     this->get_linear_solve_parameters();
 
   const std::pair<unsigned int, Real> rval =
-    linear_solver->solve (*matrix, this->add_weighted_sensitivity_solution(),
-                          *temprhs,
-                          solver_params.second,
-                          solver_params.first);
-
-  this->release_linear_solver(linear_solver);
+    solver->solve (*matrix, this->add_weighted_sensitivity_solution(),
+                   *temprhs,
+                   double(solver_params.second),
+                   solver_params.first);
 
   // The linear solver may not have fit our constraints exactly
 #ifdef LIBMESH_ENABLE_CONSTRAINTS
@@ -845,7 +638,7 @@ void ImplicitSystem::forward_qoi_parameter_sensitivity (const QoISet & qoi_indic
   // We don't need these to be closed() in this function, but libMesh
   // standard practice is to have them closed() by the time the
   // function exits
-  for (unsigned int i=0; i != this->n_qois(); ++i)
+  for (auto i : make_range(this->n_qois()))
     if (qoi_indices.has_index(i))
       this->get_adjoint_rhs(i).close();
 
@@ -1394,26 +1187,20 @@ void ImplicitSystem::qoi_parameter_hessian (const QoISet & qoi_indices,
 
 LinearSolver<Number> * ImplicitSystem::get_linear_solver() const
 {
-  // This function allocates memory and hands it back to the user as a
-  // naked pointer.  This makes it too easy to leak memory, and
-  // therefore this function is deprecated.  After a period of
-  // deprecation, this function will eventually be marked with a
-  // libmesh_error_msg().
-  libmesh_deprecated();
-  // libmesh_error_msg("This function should be overridden by derived classes. "
-  //                   "It does not contain a valid LinearSolver to hand back to "
-  //                   "the user, so it creates one, opening up the possibility "
-  //                   "of a memory leak.");
+  // Note: we always start "from scratch" to mimic the original
+  // behavior of this function. The goal is not to reuse the
+  // LinearSolver object, but to manage its lifetime in a more
+  // consistent manner.
+  linear_solver.reset();
 
-  LinearSolver<Number> * new_solver =
-    LinearSolver<Number>::build(this->comm()).release();
+  linear_solver = LinearSolver<Number>::build(this->comm());
 
   if (libMesh::on_command_line("--solver-system-names"))
-    new_solver->init((this->name()+"_").c_str());
+    linear_solver->init((this->name() + "_").c_str());
   else
-    new_solver->init();
+    linear_solver->init();
 
-  return new_solver;
+  return linear_solver.get();
 }
 
 
@@ -1426,12 +1213,32 @@ std::pair<unsigned int, Real> ImplicitSystem::get_linear_solve_parameters() cons
 
 
 
-void ImplicitSystem::release_linear_solver(LinearSolver<Number> * s) const
+void ImplicitSystem::release_linear_solver(LinearSolver<Number> *) const
 {
-  // This is the counterpart of the get_linear_solver() function, which is now deprecated.
+  // This function was originally paired with get_linear_solver()
+  // calls when that returned a dumb pointer which needed to be
+  // cleaned up. Since get_linear_solver() now just returns a pointer
+  // to a LinearSolver object managed by this class, this function no
+  // longer needs to do any cleanup.
   libmesh_deprecated();
+}
 
-  delete s;
+
+
+const SparseMatrix<Number> & ImplicitSystem::get_system_matrix() const
+{
+  libmesh_assert(matrix);
+  libmesh_assert_equal_to(&get_matrix("System Matrix"), matrix);
+  return *matrix;
+}
+
+
+
+SparseMatrix<Number> & ImplicitSystem::get_system_matrix()
+{
+  libmesh_assert(matrix);
+  libmesh_assert_equal_to(&get_matrix("System Matrix"), matrix);
+  return *matrix;
 }
 
 } // namespace libMesh

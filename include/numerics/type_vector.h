@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -30,26 +30,47 @@
 #include <cmath>
 #include <complex>
 
+#ifdef LIBMESH_HAVE_EIGEN
+#include "libmesh/ignore_warnings.h"
+#include "Eigen/Core"
+#include "libmesh/restore_warnings.h"
+#endif
+
 #ifdef LIBMESH_HAVE_METAPHYSICL
-namespace MetaPhysicL
-{
-template <typename, typename>
-class DualNumber;
-}
+#include "metaphysicl/dualnumber_forward.h"
+
 namespace std
 {
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> norm(const MetaPhysicL::DualNumber<T, D> & in);
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> norm(MetaPhysicL::DualNumber<T, D> && in);
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> sqrt(const MetaPhysicL::DualNumber<T, D> & in);
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> sqrt(MetaPhysicL::DualNumber<T, D> && in);
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> abs(const MetaPhysicL::DualNumber<T, D> & in);
-template <typename T, typename D>
-MetaPhysicL::DualNumber<T, D> abs(MetaPhysicL::DualNumber<T, D> && in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> norm(const MetaPhysicL::DualNumber<T, D, asd> & in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> norm(MetaPhysicL::DualNumber<T, D, asd> && in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> sqrt(const MetaPhysicL::DualNumber<T, D, asd> & in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> sqrt(MetaPhysicL::DualNumber<T, D, asd> && in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> abs(const MetaPhysicL::DualNumber<T, D, asd> & in);
+template <typename T, typename D, bool asd>
+MetaPhysicL::DualNumber<T, D, asd> abs(MetaPhysicL::DualNumber<T, D, asd> && in);
+
+#ifdef LIBMESH_HAVE_EIGEN
+template <typename T, typename D, bool asd>
+using ADRealEigenVector = Eigen::Matrix<MetaPhysicL::DualNumber<T, D, asd>, Eigen::Dynamic, 1>;
+
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> norm(const ADRealEigenVector<T, D, asd> &) {throw std::runtime_error("unimplemented");}
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> norm(ADRealEigenVector<T, D, asd> &&) {throw std::runtime_error("unimplemented");}
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> sqrt(const ADRealEigenVector<T, D, asd> &) {throw std::runtime_error("unimplemented");}
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> sqrt(ADRealEigenVector<T, D, asd> &&) {throw std::runtime_error("unimplemented");}
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> abs(const ADRealEigenVector<T, D, asd> &) {throw std::runtime_error("unimplemented");}
+template <typename T, typename D, bool asd>
+ADRealEigenVector<T, D, asd> abs(ADRealEigenVector<T, D, asd> &&) {throw std::runtime_error("unimplemented");}
+#endif
 }
 #endif
 
@@ -311,34 +332,19 @@ public:
   /**
    * \returns The magnitude of the vector, i.e. the square-root of the
    * sum of the elements squared.
-   *
-   * \deprecated Use the norm() function instead.
-   */
-#ifdef LIBMESH_ENABLE_DEPRECATED
-  auto size() const -> decltype(std::norm(T()));
-#endif
-
-  /**
-   * \returns The magnitude of the vector, i.e. the square-root of the
-   * sum of the elements squared.
    */
   auto norm() const -> decltype(std::norm(T()));
 
   /**
    * \returns The magnitude of the vector squared, i.e. the sum of the
    * element magnitudes squared.
-   *
-   * \deprecated Use the norm_sq() function instead.
-   */
-#ifdef LIBMESH_ENABLE_DEPRECATED
-  auto size_sq() const -> decltype(std::norm(T()));
-#endif
-
-  /**
-   * \returns The magnitude of the vector squared, i.e. the sum of the
-   * element magnitudes squared.
    */
   auto norm_sq() const -> decltype(std::norm(T()));
+
+  /**
+   * \returns True if all values in the vector are zero
+   */
+  bool is_zero() const;
 
   /**
    * Set all entries of the vector to 0.
@@ -451,14 +457,14 @@ template <typename T>
 inline
 TypeVector<T>::TypeVector ()
 {
-  _coords[0] = 0;
+  _coords[0] = {};
 
 #if LIBMESH_DIM > 1
-  _coords[1] = 0;
+  _coords[1] = {};
 #endif
 
 #if LIBMESH_DIM > 2
-  _coords[2] = 0;
+  _coords[2] = {};
 #endif
 }
 
@@ -475,12 +481,14 @@ TypeVector<T>::TypeVector (const T & x,
 #if LIBMESH_DIM > 1
   _coords[1] = y;
 #else
+  libmesh_ignore(y);
   libmesh_assert_equal_to (y, 0);
 #endif
 
 #if LIBMESH_DIM > 2
   _coords[2] = z;
 #else
+  libmesh_ignore(z);
   libmesh_assert_equal_to (z, 0);
 #endif
 }
@@ -919,22 +927,15 @@ TypeVector<T>::cross(const TypeVector<T2> & p) const
   // |(*this)(0) (*this)(1) (*this)(2)|
   // |   p(0)       p(1)       p(2)   |
 
+#if LIBMESH_DIM == 3
   return TypeVector<TS>( _coords[1]*p._coords[2] - _coords[2]*p._coords[1],
                          -_coords[0]*p._coords[2] + _coords[2]*p._coords[0],
                          _coords[0]*p._coords[1] - _coords[1]*p._coords[0]);
-}
-
-
-
-#ifdef LIBMESH_ENABLE_DEPRECATED
-template <typename T>
-inline
-auto TypeVector<T>::size() const -> decltype(std::norm(T()))
-{
-  libmesh_deprecated();
-  return this->norm();
-}
+#else
+  libmesh_ignore(p);
+  return TypeVector<TS>(0);
 #endif
+}
 
 
 
@@ -954,18 +955,6 @@ void TypeVector<T>::zero()
   for (unsigned int i=0; i<LIBMESH_DIM; i++)
     _coords[i] = 0.;
 }
-
-
-
-#ifdef LIBMESH_ENABLE_DEPRECATED
-template <typename T>
-inline
-auto TypeVector<T>::size_sq() const -> decltype(std::norm(T()))
-{
-  libmesh_deprecated();
-  return this->norm_sq();
-}
-#endif
 
 
 
@@ -990,6 +979,15 @@ auto TypeVector<T>::norm_sq() const -> decltype(std::norm(T()))
 }
 
 
+template <typename T>
+inline
+bool TypeVector<T>::is_zero() const
+{
+  for (const auto & val : _coords)
+    if (val != T(0))
+      return false;
+  return true;
+}
 
 template <typename T>
 inline
@@ -1092,6 +1090,7 @@ T triple_product(const TypeVector<T> & a,
     a(1)*(b(0)*c(2) - b(2)*c(0)) +
     a(2)*(b(0)*c(1) - b(1)*c(0));
 #else
+  libmesh_ignore(a, b, c);
   return 0;
 #endif
 }
@@ -1156,6 +1155,18 @@ TypeVector<T> TypeVector<T>::unit() const
 #endif
 
 }
+
+template <typename T>
+struct CompareTypes<TypeVector<T>, TypeVector<T>>
+{
+  typedef TypeVector<T> supertype;
+};
+
+template <typename T, typename T2>
+struct CompareTypes<TypeVector<T>, TypeVector<T2>>
+{
+  typedef TypeVector<typename CompareTypes<T,T2>::supertype> supertype;
+};
 } // namespace libMesh
 
 namespace std

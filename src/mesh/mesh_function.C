@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -50,9 +50,7 @@ MeshFunction::MeshFunction (const EquationSystems & eqn_systems,
   _vector              (vec),
   _dof_map             (dof_map),
   _system_vars         (vars),
-  _point_locator       (nullptr),
-  _out_of_mesh_mode    (false),
-  _out_of_mesh_value   ()
+  _out_of_mesh_mode    (false)
 {
 }
 
@@ -69,32 +67,36 @@ MeshFunction::MeshFunction (const EquationSystems & eqn_systems,
   _vector              (vec),
   _dof_map             (dof_map),
   _system_vars         (1,var),
-  _point_locator       (nullptr),
-  _out_of_mesh_mode    (false),
-  _out_of_mesh_value   ()
+  _out_of_mesh_mode    (false)
 {
-  //   std::vector<unsigned int> buf (1);
-  //   buf[0] = var;
-  //   _system_vars (buf);
 }
 
-
-
-
-
-
-
-MeshFunction::~MeshFunction ()
+MeshFunction::MeshFunction (const MeshFunction & mf):
+  FunctionBase<Number> (mf._master),
+  ParallelObject       (mf._eqn_systems),
+  _eqn_systems         (mf._eqn_systems),
+  _vector              (mf._vector),
+  _dof_map             (mf._dof_map),
+  _system_vars         (mf._system_vars),
+  _out_of_mesh_mode    (mf._out_of_mesh_mode)
 {
-  // only delete the point locator when we are the master
-  if (this->_master == nullptr)
-    delete this->_point_locator;
+  // Initialize the mf and set the point locator if the
+  // input mf had done so.
+  if(mf.initialized())
+  {
+    this->init();
+
+    if(mf.get_point_locator().initialized())
+      this->set_point_locator_tolerance(mf.get_point_locator().get_close_to_point_tol());
+
+  }
 }
 
+MeshFunction::~MeshFunction () = default;
 
 
 
-void MeshFunction::init (const Trees::BuildType /*point_locator_build_type*/)
+void MeshFunction::init ()
 {
   // are indices of the desired variable(s) provided?
   libmesh_assert_greater (this->_system_vars.size(), 0);
@@ -102,56 +104,40 @@ void MeshFunction::init (const Trees::BuildType /*point_locator_build_type*/)
   // Don't do twice...
   if (this->_initialized)
     {
-      libmesh_assert(this->_point_locator);
+      libmesh_assert(_point_locator);
       return;
     }
 
-  /*
-   * set up the PointLocator: either someone else
-   * is the master (go and get the address of his
-   * point locator) or this object is the master
-   * (build the point locator  on our own).
-   */
-  if (this->_master != nullptr)
-    {
-      // we aren't the master
-      const MeshFunction * master =
-        cast_ptr<const MeshFunction *>(this->_master);
-
-      if (master->_point_locator == nullptr)
-        libmesh_error_msg("ERROR: When the master-servant concept is used, the master has to be initialized first!");
-
-      else
-        {
-          this->_point_locator = master->_point_locator;
-        }
-    }
-  else
-    {
-      // we are the master: build the point locator
-
-      // constant reference to the other mesh
-      const MeshBase & mesh = this->_eqn_systems.get_mesh();
-
-      // Get PointLocator object from the Mesh. We are responsible for
-      // deleting this only if we are the master.
-      this->_point_locator = mesh.sub_point_locator().release();
-    }
+  // The Mesh owns the "master" PointLocator, while handing us a
+  // PointLocator "proxy" that forwards all requests to the master.
+  const MeshBase & mesh = this->_eqn_systems.get_mesh();
+  _point_locator = mesh.sub_point_locator();
 
   // ready for use
   this->_initialized = true;
 }
 
 
+
+void MeshFunction::init (const Trees::BuildType /*point_locator_build_type*/)
+{
+  libmesh_deprecated();
+
+  // Call the init() taking no args instead. Note: this is backwards
+  // compatible because the argument was not used for anything
+  // previously anyway.
+  this->init();
+}
+
+
+
 void
 MeshFunction::clear ()
 {
   // only delete the point locator when we are the master
-  if ((this->_point_locator != nullptr) && (this->_master == nullptr))
-    {
-      delete this->_point_locator;
-      this->_point_locator = nullptr;
-    }
+  if (_point_locator && !_master)
+    _point_locator.reset();
+
   this->_initialized = false;
 }
 
@@ -159,13 +145,7 @@ MeshFunction::clear ()
 
 std::unique_ptr<FunctionBase<Number>> MeshFunction::clone () const
 {
-  FunctionBase<Number> * mf_clone =
-    new MeshFunction(_eqn_systems, _vector, _dof_map, _system_vars, this);
-
-  if (this->initialized())
-    mf_clone->init();
-
-  return std::unique_ptr<FunctionBase<Number>>(mf_clone);
+  return libmesh_make_unique<MeshFunction>(*this);
 }
 
 
@@ -272,10 +252,8 @@ void MeshFunction::operator() (const Point & p,
          * Note that the fe_type can safely be used from the 0-variable,
          * since the inverse mapping is the same for all FEFamilies
          */
-        const Point mapped_point (FEInterface::inverse_map (dim,
-                                                            this->_dof_map.variable_type(0),
-                                                            element,
-                                                            p));
+        const Point mapped_point (FEMap::inverse_map (dim, element,
+                                                      p));
 
         // loop over all vars
         for (auto index : index_range(this->_system_vars))
@@ -363,10 +341,7 @@ void MeshFunction::discontinuous_value (const Point & p,
        * Note that the fe_type can safely be used from the 0-variable,
        * since the inverse mapping is the same for all FEFamilies
        */
-      const Point mapped_point (FEInterface::inverse_map (dim,
-                                                          this->_dof_map.variable_type(0),
-                                                          element,
-                                                          p));
+      const Point mapped_point (FEMap::inverse_map (dim, element, p));
 
       // loop over all vars
       for (auto index : index_range(this->_system_vars))
@@ -451,10 +426,8 @@ void MeshFunction::gradient (const Point & p,
          * Note that the fe_type can safely be used from the 0-variable,
          * since the inverse mapping is the same for all FEFamilies
          */
-        const Point mapped_point (FEInterface::inverse_map (dim,
-                                                            this->_dof_map.variable_type(0),
-                                                            element,
-                                                            p));
+        const Point mapped_point (FEMap::inverse_map (dim, element,
+                                                      p));
 
         std::vector<Point> point_list (1, mapped_point);
 
@@ -508,7 +481,7 @@ void MeshFunction::gradient (const Point & p,
                 FEInterface::compute_data (dim, fe_type, element, data);
                 //grad [x] = data.dshape[i](v) * dv/dx  * dof_index [i]
                 // sum over all indices
-                for (std::size_t i=0; i<dof_indices.size(); i++)
+                for (auto i : index_range(dof_indices))
                   {
                     // local coordinates
                     for (std::size_t v=0; v<dim; v++)
@@ -565,10 +538,7 @@ void MeshFunction::discontinuous_gradient (const Point & p,
        * Note that the fe_type can safely be used from the 0-variable,
        * since the inverse mapping is the same for all FEFamilies
        */
-      const Point mapped_point (FEInterface::inverse_map (dim,
-                                                          this->_dof_map.variable_type(0),
-                                                          element,
-                                                          p));
+      const Point mapped_point (FEMap::inverse_map (dim, element, p));
 
 
       // loop over all vars
@@ -687,10 +657,8 @@ void MeshFunction::hessian (const Point & p,
          * Note that the fe_type can safely be used from the 0-variable,
          * since the inverse mapping is the same for all FEFamilies
          */
-        const Point mapped_point (FEInterface::inverse_map (dim,
-                                                            this->_dof_map.variable_type(0),
-                                                            element,
-                                                            p));
+        const Point mapped_point (FEMap::inverse_map (dim, element,
+                                                      p));
 
         std::vector<Point> point_list (1, mapped_point);
 
@@ -746,14 +714,14 @@ const Elem * MeshFunction::find_element(const Point & p,
     {
       const MeshFunction * master =
         cast_ptr<const MeshFunction *>(this->_master);
-      if (_out_of_mesh_mode!=master->_out_of_mesh_mode)
-        libmesh_error_msg("ERROR: If you use out-of-mesh-mode in connection with master mesh " \
-                          << "functions, you must enable out-of-mesh mode for both the master and the slave mesh function.");
+      libmesh_error_msg_if(_out_of_mesh_mode!=master->_out_of_mesh_mode,
+                           "ERROR: If you use out-of-mesh-mode in connection with master mesh "
+                           "functions, you must enable out-of-mesh mode for both the master and the slave mesh function.");
     }
 #endif
 
   // locate the point in the other mesh
-  const Elem * element = this->_point_locator->operator()(p,subdomain_ids);
+  const Elem * element = (*_point_locator)(p, subdomain_ids);
 
   // If we have an element, but it's not a local element, then we
   // either need to have a serialized vector or we need to find a
@@ -767,11 +735,11 @@ const Elem * MeshFunction::find_element(const Point & p,
       element->find_point_neighbors(p, point_neighbors);
       element = nullptr;
       for (const auto & elem : point_neighbors)
-          if (elem->processor_id() == this->processor_id())
-            {
-              element = elem;
-              break;
-            }
+        if (elem->processor_id() == this->processor_id())
+          {
+            element = elem;
+            break;
+          }
     }
 
   return element;
@@ -790,16 +758,16 @@ std::set<const Elem *> MeshFunction::find_elements(const Point & p,
     {
       const MeshFunction * master =
         cast_ptr<const MeshFunction *>(this->_master);
-      if (_out_of_mesh_mode!=master->_out_of_mesh_mode)
-        libmesh_error_msg("ERROR: If you use out-of-mesh-mode in connection with master mesh " \
-                          << "functions, you must enable out-of-mesh mode for both the master and the slave mesh function.");
+      libmesh_error_msg_if(_out_of_mesh_mode!=master->_out_of_mesh_mode,
+                           "ERROR: If you use out-of-mesh-mode in connection with master mesh "
+                           "functions, you must enable out-of-mesh mode for both the master and the slave mesh function.");
     }
 #endif
 
   // locate the point in the other mesh
   std::set<const Elem *> candidate_elements;
   std::set<const Elem *> final_candidate_elements;
-  this->_point_locator->operator()(p,candidate_elements,subdomain_ids);
+  (*_point_locator)(p, candidate_elements, subdomain_ids);
   for (const auto & element : candidate_elements)
     {
       // If we have an element, but it's not a local element, then we
@@ -826,7 +794,7 @@ std::set<const Elem *> MeshFunction::find_elements(const Point & p,
   return final_candidate_elements;
 }
 
-const PointLocatorBase & MeshFunction::get_point_locator (void) const
+const PointLocatorBase & MeshFunction::get_point_locator () const
 {
   libmesh_assert (this->initialized());
   return *_point_locator;
@@ -847,7 +815,7 @@ void MeshFunction::enable_out_of_mesh_mode(const Number & value)
   this->enable_out_of_mesh_mode(v);
 }
 
-void MeshFunction::disable_out_of_mesh_mode(void)
+void MeshFunction::disable_out_of_mesh_mode()
 {
   libmesh_assert (this->initialized());
   _point_locator->disable_out_of_mesh_mode();
@@ -857,6 +825,7 @@ void MeshFunction::disable_out_of_mesh_mode(void)
 void MeshFunction::set_point_locator_tolerance(Real tol)
 {
   _point_locator->set_close_to_point_tol(tol);
+  _point_locator->set_contains_point_tol(tol);
 }
 
 void MeshFunction::unset_point_locator_tolerance()

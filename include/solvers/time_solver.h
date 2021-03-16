@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -21,12 +21,8 @@
 #define LIBMESH_TIME_SOLVER_H
 
 // Local includes
-#include "libmesh/auto_ptr.h" // deprecated
 #include "libmesh/libmesh_common.h"
-#include "libmesh/linear_solver.h"
-#include "libmesh/numeric_vector.h"
 #include "libmesh/reference_counted_object.h"
-#include "libmesh/solution_history.h"
 
 // C++ includes
 #include <memory>
@@ -40,7 +36,15 @@ class DiffSolver;
 class DifferentiablePhysics;
 class DifferentiableSystem;
 class ParameterVector;
+class SensitivityData;
+class SolutionHistory;
 class SystemNorm;
+class QoISet;
+class AdjointRefinementEstimator;
+class ErrorVector;
+
+template <typename T>
+class LinearSolver;
 
 /**
  * This is a generic class that defines a solver to handle
@@ -112,6 +116,12 @@ public:
   virtual void advance_timestep ();
 
   /**
+   * This method solves for the adjoint solution at the next adjoint timestep
+   * (or a steady state adjoint solve)
+   */
+  virtual std::pair<unsigned int, Real> adjoint_solve (const QoISet & qoi_indices);
+
+  /**
    * This method advances the adjoint solution to the previous
    * timestep, after an adjoint_solve() has been performed.  This will
    * be done before every UnsteadySolver::adjoint_solve().
@@ -123,6 +133,26 @@ public:
    * system.time
    */
   virtual void retrieve_timestep();
+
+  /**
+   * A method to integrate the system::QoI functionals
+   */
+  virtual void integrate_qoi_timestep();
+
+  /**
+   * A method to integrate the adjoint sensitivity w.r.t a given parameter
+   * vector. int_{tstep_start}^{tstep_end} dQ/dp dt = int_{tstep_start}^{tstep_end} (\partialQ / \partial p) - ( \partial R (u,z) / \partial p ) dt
+   */
+  virtual void integrate_adjoint_sensitivity(const QoISet & qois, const ParameterVector & parameter_vector, SensitivityData & sensitivities);
+
+  /**
+   * A method to compute the adjoint refinement error estimate at the current timestep.
+   * int_{tstep_start}^{tstep_end} R(u^h,z) dt
+   * The user provides an initialized ARefEE object.
+   * Fills in an ErrorVector that contains the weighted sum of errors from all the QoIs and can be used to guide AMR.
+   * CURRENTLY ONLY SUPPORTED for Backward Euler.
+   */
+  virtual void integrate_adjoint_refinement_error_estimate(AdjointRefinementEstimator & adjoint_refinement_error_estimator, ErrorVector & QoI_elementwise_error);
 
   /**
    * This method uses the DifferentiablePhysics
@@ -227,6 +257,12 @@ public:
   void set_solution_history(const SolutionHistory & _solution_history);
 
   /**
+￼   * A getter function that returns a reference to the solution history
+￼   * object owned by TimeSolver
+￼   * */
+  SolutionHistory & get_solution_history();
+
+  /**
    * Accessor for querying whether we need to do a primal
    * or adjoint solve
    */
@@ -239,6 +275,16 @@ public:
    */
   void set_is_adjoint(bool _is_adjoint_value)
   { _is_adjoint = _is_adjoint_value; }
+
+  /**
+   * Returns system.deltat if fixed timestep solver is used,
+   * the complete timestep size (sum of all substeps) if the adaptive
+   * time solver is used.
+   * Returns the change in system.time, deltat, for the last timestep which was successfully completed.
+   * This only returns the outermost step size in the case of nested time solvers.
+   * If no time step has yet been successfully completed, then returns system.deltat.
+   */
+  virtual Real last_completed_timestep_size();
 
 protected:
 
@@ -271,6 +317,11 @@ protected:
   typedef bool (DifferentiablePhysics::*ResFuncType) (bool, DiffContext &);
 
   typedef void (DiffContext::*ReinitFuncType) (Real);
+
+  /**
+   * The deltat for the last completed timestep before the current one
+   */
+  Real last_deltat;
 
 private:
 

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,8 +22,6 @@
 
 // Local Includes
 #include "libmesh/fem_system.h"
-
-// C++ includes
 
 namespace libMesh
 {
@@ -64,8 +62,14 @@ public:
                       const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions as its base class.
+   * - The destructor is defaulted out-of-line.
    */
+  ContinuationSystem (const ContinuationSystem &) = delete;
+  ContinuationSystem & operator= (const ContinuationSystem &) = delete;
+  ContinuationSystem (ContinuationSystem &&) = delete;
+  ContinuationSystem & operator= (ContinuationSystem &&) = delete;
   virtual ~ContinuationSystem ();
 
   /**
@@ -131,20 +135,20 @@ public:
    * How tightly should the Newton iterations attempt to converge delta_lambda.
    * Defaults to 1.e-6.
    */
-  Real continuation_parameter_tolerance;
+  double continuation_parameter_tolerance;
 
   /**
    * How tightly should the Newton iterations attempt to converge ||delta_u||
    * Defaults to 1.e-6.
    */
-  Real solution_tolerance;
+  double solution_tolerance;
 
   /**
    * How much to try to reduce the residual by at the first (inexact) Newton step.
    * This is frequently something large like 1/2 in an inexact Newton method, to
    * prevent oversolving.
    */
-  Real initial_newton_tolerance;
+  double initial_newton_tolerance;
 
   /**
    * Stores the current solution and continuation parameter
@@ -368,13 +372,6 @@ private:
    * augmented PDE solve.
    */
   NumericVector<Number> * delta_u;
-
-  /**
-   * We maintain our own linear solver interface, for solving
-   * custom systems of equations and/or things which do not require
-   * a full-blown NewtonSolver.
-   */
-  std::unique_ptr<LinearSolver<Number>> linear_solver;
 
   /**
    * False until initialize_tangent() is called

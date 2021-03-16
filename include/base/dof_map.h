@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -22,7 +22,6 @@
 
 // Local Includes
 #include "libmesh/libmesh_common.h"
-#include "libmesh/auto_ptr.h" // deprecated
 #include "libmesh/reference_counted_object.h"
 #include "libmesh/libmesh.h" // libMesh::invalid_uint
 #include "libmesh/variable.h"
@@ -194,21 +193,10 @@ public:
   ~DofMap();
 
   /**
-   * Abstract base class to be used to add user-defined implicit
-   * degree of freedom couplings.
+   * Backwards compatibility for prior AugmentSparsityPattern users.
    */
-  class AugmentSparsityPattern
-  {
-  public:
-    virtual ~AugmentSparsityPattern () {}
-
-    /**
-     * User-defined function to augment the sparsity pattern.
-     */
-    virtual void augment_sparsity_pattern (SparsityPattern::Graph & sparsity,
-                                           std::vector<dof_id_type> & n_nz,
-                                           std::vector<dof_id_type> & n_oz) = 0;
-  };
+  class AugmentSparsityPattern : public SparsityPattern::AugmentSparsityPattern
+  {};
 
   /**
    * Abstract base class to be used to add user-defined parallel
@@ -226,11 +214,19 @@ public:
   };
 
   /**
-   * Additional matrices may be handled with this \p DofMap.
+   * Additional matrices may be attached to this \p DofMap.
    * They are initialized to the same sparsity structure as
    * the major matrix.
    */
   void attach_matrix (SparseMatrix<Number> & matrix);
+
+  /**
+   * Additional matrices may be be temporarily initialized by this \p
+   * DofMap.
+   * They are initialized to the same sparsity structure as
+   * the major matrix.
+   */
+  void update_sparsity_pattern(SparseMatrix<Number> & matrix) const;
 
   /**
    * Matrices should not be attached more than once.  We can test for
@@ -242,8 +238,9 @@ public:
    * Distribute dofs on the current mesh.  Also builds the send list for
    * processor \p proc_id, which defaults to 0 for ease of use in serial
    * applications.
+   * \returns The total number of DOFs for the System, summed across all procs.
    */
-  void distribute_dofs (MeshBase &);
+  std::size_t distribute_dofs (MeshBase &);
 
   /**
    * Computes the sparsity pattern for the matrices corresponding to
@@ -251,6 +248,30 @@ public:
    * preallocation of sparse matrices.
    */
   void compute_sparsity (const MeshBase &);
+
+  /**
+   * Returns true iff a sparsity pattern has already been computed.
+   */
+  bool computed_sparsity_already () const;
+
+  /**
+   * Sets the current policy for constructing sparsity patterns: if
+   * \p use_constraints is true (for robustness), we explicitly
+   * account for sparsity entries created by constraint matrix pre-
+   * and post- application.  If \p use_constraints is false (for
+   * speed), we calculate only the sparsity pattern of an
+   * unconstrained matrix.  This is false by default, because in
+   * nearly all applications our constraints do not increase the
+   * number of non-zeros required in a sparse matrix.
+   */
+  void set_constrained_sparsity_construction(bool use_constraints);
+
+  /**
+   * Returns true iff the current policy when constructing sparsity
+   * patterns is to explicitly account for sparsity entries created by
+   * constraint matrix pre- and post- application.
+   */
+  bool constrained_sparsity_construction();
 
   /**
    * Clears the sparsity pattern
@@ -306,6 +327,18 @@ public:
                             bool to_mesh = true);
 
   /**
+   * Adds a functor which can specify coupling requirements for
+   * creation of sparse matrices.
+   *
+   * GhostingFunctor memory when using this method is managed by the
+   * shared_ptr mechanism.
+   */
+  void add_coupling_functor(std::shared_ptr<GhostingFunctor> coupling_functor,
+                            bool to_mesh = true)
+  { _shared_functors[coupling_functor.get()] = coupling_functor;
+    this->add_coupling_functor(*coupling_functor, to_mesh); }
+
+  /**
    * Removes a functor which was previously added to the set of
    * coupling functors, from both this DofMap and from the underlying
    * mesh.
@@ -356,6 +389,18 @@ public:
                                       bool to_mesh = true);
 
   /**
+   * Adds a functor which can specify algebraic ghosting requirements
+   * for use with distributed vectors.
+   *
+   * GhostingFunctor memory when using this method is managed by the
+   * shared_ptr mechanism.
+   */
+  void add_algebraic_ghosting_functor(std::shared_ptr<GhostingFunctor> evaluable_functor,
+                                      bool to_mesh = true)
+  { _shared_functors[evaluable_functor.get()] = evaluable_functor;
+    this->add_algebraic_ghosting_functor(*evaluable_functor, to_mesh); }
+
+  /**
    * Removes a functor which was previously added to the set of
    * algebraic ghosting functors, from both this DofMap and from the
    * underlying mesh.
@@ -389,7 +434,7 @@ public:
    *
    * This is an advanced function... use at your own peril!
    */
-  void attach_extra_sparsity_object (DofMap::AugmentSparsityPattern & asp)
+  void attach_extra_sparsity_object (SparsityPattern::AugmentSparsityPattern & asp)
   {
     _augment_sparsity_pattern = &asp;
   }
@@ -440,6 +485,28 @@ public:
   void prepare_send_list ();
 
   /**
+   * Clears the \p _send_list vector. This should be done in order to completely
+   * rebuild the send_list from scratch rather than merely adding to the existing
+   * send_list.
+   */
+  void clear_send_list ()
+  {
+    _send_list.clear();
+  }
+
+  /**
+   * Clears the \p _send_list vector and then rebuilds it. This may be needed
+   * in special situations, for example when an algebraic coupling functor cannot
+   * be added to the \p DofMap until after it is completely setup. Then this method
+   * can be used to rebuild the send_list once the algebraic coupling functor is
+   * added. Note that while this will recommunicate constraints with the updated
+   * send_list, this does assume no new constraints have been added since the previous
+   * reinit_constraints call.
+   */
+  void reinit_send_list (MeshBase & mesh);
+
+
+  /**
    * \returns A constant reference to the \p _send_list for this processor.
    *
    * The \p _send_list contains the global indices of all the
@@ -459,8 +526,8 @@ public:
    */
   const std::vector<dof_id_type> & get_n_nz() const
   {
-    libmesh_assert(_n_nz);
-    return *_n_nz;
+    libmesh_assert(_sp);
+    return _sp->get_n_nz();
   }
 
   /**
@@ -472,8 +539,22 @@ public:
    */
   const std::vector<dof_id_type> & get_n_oz() const
   {
-    libmesh_assert(_n_oz);
-    return *_n_oz;
+    libmesh_assert(_sp);
+    return _sp->get_n_oz();
+  }
+
+
+  /**
+   * \returns A constant pointer to the sparsity pattern stored here,
+   * once that has been computed.  Returns null if no sparsity pattern
+   * has yet been computed.
+   *
+   * If need_full_sparsity_pattern is false, the "sparsity pattern"
+   * may only own n_nz and n_oz lists.
+   */
+  const SparsityPattern::Build * get_sparsity_pattern() const
+  {
+    return _sp.get();
   }
 
   // /**
@@ -554,24 +635,24 @@ public:
    */
   bool has_blocked_representation() const
   {
-#ifdef LIBMESH_ENABLE_BLOCKED_STORAGE
     return ((this->n_variable_groups() == 1) && (this->n_variables() > 1));
-#else
-    return false;
-#endif
   }
 
   /**
    * \returns The block size, if the variables are amenable to block storage.
    * Otherwise 1.
+   * This routine was originally designed to enable a blocked storage, but
+   * it turns out this information is still super useful for solvers even when
+   * we do not use the blocked storage (e.g., MATMPIBAIJ in PETSc). For example (in PCHMG),
+   * for a system of PDEs, to construct an efficient multilevel preconditioner, we coarsen
+   * the matrix of one single PDE instead of the entire huge matrix. In order to
+   * accomplish this, we need to know many PDEs we have. Another use case,
+   * the fieldsplit preconditioner can be constructed in place with this info wihtout
+   * involving any user efforts.
    */
   unsigned int block_size() const
   {
-#ifdef LIBMESH_ENABLE_BLOCKED_STORAGE
     return (this->has_blocked_representation() ? this->n_variables() : 1);
-#else
-    return 1;
-#endif
   }
 
   /**
@@ -619,24 +700,6 @@ public:
   { return this->first_old_dof(this->processor_id()); }
 
 #endif //LIBMESH_ENABLE_AMR
-
-  /**
-   * \returns The last dof index that is local to processor \p proc.
-   *
-   * \deprecated This function returns nonsense in the rare case where
-   * \p proc has no local dof indices.  Use end_dof() instead.
-   */
-#ifdef LIBMESH_ENABLE_DEPRECATED
-  dof_id_type last_dof(const processor_id_type proc) const
-  {
-    libmesh_deprecated();
-    libmesh_assert_less (proc, _end_df.size());
-    return cast_int<dof_id_type>(_end_df[proc] - 1);
-  }
-
-  dof_id_type last_dof() const
-  { return this->last_dof(this->processor_id()); }
-#endif
 
   /**
    * \returns The first dof index that is after all indices local to
@@ -694,18 +757,44 @@ public:
 
   /**
    * Fills the vector \p di with the global degree of freedom indices
-   * for the node.
+   * for the \p node.
    */
   void dof_indices (const Node * const node,
                     std::vector<dof_id_type> & di) const;
 
   /**
    * Fills the vector \p di with the global degree of freedom indices
-   * for the node.   For one variable \p vn.
+   * for the \p node, for one variable \p vn.
    */
   void dof_indices (const Node * const node,
                     std::vector<dof_id_type> & di,
                     const unsigned int vn) const;
+
+  /**
+   * Appends to the vector \p di the global degree of freedom indices
+   * for \p elem.node_ref(n), for one variable \p vn.  On hanging
+   * nodes with both vertex and non-vertex DoFs, only those indices
+   * which are directly supported on \p elem are included.
+   */
+  void dof_indices (const Elem & elem,
+                    unsigned int n,
+                    std::vector<dof_id_type> & di,
+                    const unsigned int vn) const;
+
+#ifdef LIBMESH_ENABLE_AMR
+
+  /**
+   * Appends to the vector \p di the old global degree of freedom
+   * indices for \p elem.node_ref(n), for one variable \p vn.  On
+   * hanging nodes with both vertex and non-vertex DoFs, only those
+   * indices which are directly supported on \p elem are included.
+   */
+  void old_dof_indices (const Elem & elem,
+                        unsigned int n,
+                        std::vector<dof_id_type> & di,
+                        const unsigned int vn) const;
+
+#endif // LIBMESH_ENABLE_AMR
 
   /**
    * Fills the vector \p di with the global degree of freedom indices
@@ -933,6 +1022,23 @@ public:
   void unstash_dof_constraints()
   {
     libmesh_assert(_dof_constraints.empty());
+    _dof_constraints.swap(_stashed_dof_constraints);
+  }
+
+  /**
+   * Similar to the stash/unstash_dof_constraints() API, but swaps
+   * _dof_constraints and _stashed_dof_constraints without asserting
+   * that the source or destination is empty first.
+   *
+   * \note There is an implicit assumption that swapping between sets
+   * of Constraints does not change the sparsity pattern or expand the
+   * send_list, since the only thing changed is the DofConstraints
+   * themselves.  This is intended to work for swapping between
+   * DofConstraints A and B, where A is used to define the send_list,
+   * and B is a subset of A.
+   */
+  void swap_dof_constraints()
+  {
     _dof_constraints.swap(_stashed_dof_constraints);
   }
 
@@ -1176,10 +1282,9 @@ public:
                                         NumericVector<Number> * rhs,
                                         NumericVector<Number> const * solution,
                                         bool homogeneous = true) const;
+
   void enforce_constraints_on_jacobian (const NonlinearImplicitSystem & system,
                                         SparseMatrix<Number> * jac) const;
-
-
 
 #ifdef LIBMESH_ENABLE_PERIODIC
 
@@ -1210,6 +1315,11 @@ public:
     return _periodic_boundaries.get();
   }
 
+  const PeriodicBoundaries * get_periodic_boundaries() const
+  {
+    return _periodic_boundaries.get();
+  }
+
 #endif // LIBMESH_ENABLE_PERIODIC
 
 
@@ -1220,6 +1330,16 @@ public:
 
   /**
    * Adds a copy of the specified Dirichlet boundary to the system.
+   *
+   * The constraints implied by DirichletBoundary objects are imposed
+   * in the same order in which DirichletBoundary objects are added to
+   * the DofMap. When multiple DirichletBoundary objects would impose
+   * competing constraints on a given DOF, the *first*
+   * DirichletBoundary to constrain the DOF "wins". This distinction
+   * is important when e.g. two surfaces (sidesets) intersect. The
+   * nodes on the intersection will be constrained according to
+   * whichever sideset's DirichletBoundary object was added to the
+   * DofMap first.
    */
   void add_dirichlet_boundary (const DirichletBoundary & dirichlet_boundary);
 
@@ -1261,6 +1381,12 @@ public:
   DirichletBoundaries *
   get_adjoint_dirichlet_boundaries(unsigned int q);
 
+  /**
+   * Check that all the ids in dirichlet_bcids are actually present in the mesh.
+   * If not, this will throw an error.
+   */
+  void check_dirichlet_bcid_consistency (const MeshBase & mesh,
+                                         const DirichletBoundary & boundary) const;
 #endif // LIBMESH_ENABLE_DIRICHLET
 
 
@@ -1279,6 +1405,8 @@ public:
    */
   // void augment_send_list_for_projection(const MeshBase &);
 
+#ifdef LIBMESH_ENABLE_AMR
+
   /**
    * Fills the vector di with the global degree of freedom indices
    * for the element using the \p DofMap::old_dof_object.
@@ -1288,10 +1416,13 @@ public:
   void old_dof_indices (const Elem * const elem,
                         std::vector<dof_id_type> & di,
                         const unsigned int vn = libMesh::invalid_uint) const;
+
   /**
    * \returns The total number of degrees of freedom on old_dof_objects
    */
   dof_id_type n_old_dofs() const { return _n_old_dfs; }
+
+#endif // LIBMESH_ENABLE_AMR
 
   /**
    * Constrains degrees of freedom on side \p s of element \p elem which
@@ -1346,6 +1477,23 @@ public:
    */
   unsigned int sys_number() const;
 
+  /**
+   * Builds a sparsity pattern for matrices using the current
+   * degree-of-freedom numbering and coupling.
+   *
+   * By default, ignores constraint equations, for build speed; this
+   * is valid for the combination of !need_full_sparsity_pattern and
+   * constraints which only come from periodic boundary conditions and
+   * adaptive mesh refinement, where matrix constraint adds some
+   * matrix entries but removes equally many (or more) other entries.
+   *
+   * Can be told to calculate sparsity for the constrained matrix,
+   * which may be necessary in the case of spline control node
+   * constraints or sufficiently many user constraints.
+   */
+  std::unique_ptr<SparsityPattern::Build> build_sparsity(const MeshBase & mesh,
+                                                         bool calculate_constrained = false) const;
+
 private:
 
   /**
@@ -1373,9 +1521,14 @@ private:
                      ) const;
 
   /**
-   * Builds a sparsity pattern
+   * Helper function that implements the element-nodal versions of
+   * dof_indices and old_dof_indices
    */
-  std::unique_ptr<SparsityPattern::Build> build_sparsity(const MeshBase & mesh) const;
+  void _node_dof_indices (const Elem & elem,
+                          unsigned int n,
+                          const DofObject & obj,
+                          std::vector<dof_id_type> & di,
+                          const unsigned int vn) const;
 
   /**
    * Invalidates all active DofObject dofs for this system
@@ -1507,6 +1660,13 @@ private:
    */
   void add_constraints_to_send_list();
 
+  /**
+   * Adds any spline constraints from the Mesh to our DoF constraints.
+   * If any Dirichlet constraints exist on spline-constrained nodes,
+   * l2-projects those constraints onto the spline basis.
+   */
+  void process_mesh_constraint_rows(const MeshBase & mesh);
+
 #endif // LIBMESH_ENABLE_CONSTRAINTS
 
   /**
@@ -1515,6 +1675,12 @@ private:
    * graph is cyclic.
    */
   bool _error_on_constraint_loop;
+
+  /**
+   * This flag indicates whether or not we explicity take constraint
+   * equations into account when computing a sparsity pattern.
+   */
+  bool _constrained_sparsity_construction;
 
   /**
    * The finite element type for each variable.
@@ -1573,7 +1739,7 @@ private:
   /**
    * Function object to call to add extra entries to the sparsity pattern
    */
-  AugmentSparsityPattern * _augment_sparsity_pattern;
+  SparsityPattern::AugmentSparsityPattern * _augment_sparsity_pattern;
 
   /**
    * A function pointer to a function to call to add extra entries to the sparsity pattern
@@ -1642,30 +1808,23 @@ private:
   std::set<GhostingFunctor *> _coupling_functors;
 
   /**
+   * Hang on to references to any GhostingFunctor objects we were
+   * passed in shared_ptr form
+   */
+  std::map<GhostingFunctor *, std::shared_ptr<GhostingFunctor> > _shared_functors;
+
+  /**
    * Default false; set to true if any attached matrix requires a full
    * sparsity pattern.
    */
   bool need_full_sparsity_pattern;
 
   /**
-   * The sparsity pattern of the global matrix, kept around if it
-   * might be needed by future additions of the same type of matrix.
+   * The sparsity pattern of the global matrix.  If
+   * need_full_sparsity_pattern is true, we save the entire sparse
+   * graph here.  Otherwise we save just the n_nz and n_oz vectors.
    */
   std::unique_ptr<SparsityPattern::Build> _sp;
-
-  /**
-   * The number of on-processor nonzeros in my portion of the
-   * global matrix.  If need_full_sparsity_pattern is true, this will
-   * just be a pointer into the corresponding sparsity pattern vector.
-   * Otherwise we have to new/delete it ourselves.
-   */
-  std::vector<dof_id_type> * _n_nz;
-
-  /**
-   * The number of off-processor nonzeros in my portion of the
-   * global matrix; allocated similar to _n_nz.
-   */
-  std::vector<dof_id_type> * _n_oz;
 
   /**
    * Total number of degrees of freedom.
@@ -1732,12 +1891,6 @@ private:
 #endif
 
 #ifdef LIBMESH_ENABLE_DIRICHLET
-  /**
-   * Check that all the ids in dirichlet_bcids are actually present in the mesh.
-   * If not, this will throw an error.
-   */
-  void check_dirichlet_bcid_consistency (const MeshBase & mesh,
-                                         const DirichletBoundary & boundary) const;
   /**
    * Data structure containing Dirichlet functions.  The ith
    * entry is the constraint matrix row for boundaryid i.
@@ -1831,6 +1984,8 @@ const FEType & DofMap::variable_group_type (const unsigned int vg) const
 }
 
 
+#ifdef LIBMESH_ENABLE_CONSTRAINTS
+
 
 inline
 bool DofMap::is_constrained_node (const Node *
@@ -1847,7 +2002,6 @@ bool DofMap::is_constrained_node (const Node *
   return false;
 }
 
-#ifdef LIBMESH_ENABLE_CONSTRAINTS
 
 inline
 bool DofMap::is_constrained_dof (const dof_id_type dof) const
@@ -1927,19 +2081,63 @@ inline void DofMap::constrain_element_matrix_and_vector (DenseMatrix<Number> &,
                                                          std::vector<dof_id_type> &,
                                                          bool) const {}
 
+inline void DofMap::heterogenously_constrain_element_matrix_and_vector
+  (DenseMatrix<Number> &, DenseVector<Number> &,
+   std::vector<dof_id_type> &, bool, int) const {}
+
+inline void DofMap::heterogenously_constrain_element_vector
+  (const DenseMatrix<Number> &, DenseVector<Number> &,
+   std::vector<dof_id_type> &, bool, int) const {}
+
 inline void DofMap::constrain_element_dyad_matrix (DenseVector<Number> &,
                                                    DenseVector<Number> &,
                                                    std::vector<dof_id_type> &,
                                                    bool) const {}
 
+inline void DofMap::constrain_nothing (std::vector<dof_id_type> &) const {}
+
 inline void DofMap::enforce_constraints_exactly (const System &,
                                                  NumericVector<Number> *,
-                                                 bool = false) const {}
+                                                 bool) const {}
 
 inline void DofMap::enforce_adjoint_constraints_exactly (NumericVector<Number> &,
                                                          unsigned int) const {}
 
+
+inline void DofMap::enforce_constraints_on_residual
+  (const NonlinearImplicitSystem &,
+   NumericVector<Number> *,
+   NumericVector<Number> const *,
+   bool) const {}
+
+inline void DofMap::enforce_constraints_on_jacobian
+  (const NonlinearImplicitSystem &,
+   SparseMatrix<Number> *) const {}
+
 #endif // LIBMESH_ENABLE_CONSTRAINTS
+
+
+
+inline
+void DofMap::set_constrained_sparsity_construction(bool use_constraints)
+{
+#ifdef LIBMESH_ENABLE_CONSTRAINTS
+  _constrained_sparsity_construction = use_constraints;
+#endif
+  libmesh_ignore(use_constraints);
+}
+
+
+
+inline
+bool DofMap::constrained_sparsity_construction()
+{
+#ifdef LIBMESH_ENABLE_CONSTRAINTS
+  return _constrained_sparsity_construction;
+#else
+  return true;
+#endif
+}
 
 } // namespace libMesh
 

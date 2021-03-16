@@ -1,22 +1,9 @@
-// Ignore unused parameter warnings coming from cppunit headers
-#include <libmesh/ignore_warnings.h>
-#include <cppunit/extensions/HelperMacros.h>
-#include <cppunit/TestCase.h>
-#include <libmesh/restore_warnings.h>
-
 #include <libmesh/vector_value.h>
 
 #include "type_vector_test.h"
 
-// THE CPPUNIT_TEST_SUITE_END macro expands to code that involves
-// std::auto_ptr, which in turn produces -Wdeprecated-declarations
-// warnings.  These can be ignored in GCC as long as we wrap the
-// offending code in appropriate pragmas.  We can't get away with a
-// single ignore_warnings.h inclusion at the beginning of this file,
-// since the libmesh headers pull in a restore_warnings.h at some
-// point.  We also don't bother restoring warnings at the end of this
-// file since it's not a header.
-#include <libmesh/ignore_warnings.h>
+#include <type_traits>
+
 
 using namespace libMesh;
 
@@ -51,6 +38,75 @@ public:
   CPPUNIT_TEST_SUITE_END();
 };
 
+class VectorCompareTypesTest : public CppUnit::TestCase {
+public:
+  CPPUNIT_TEST_SUITE( VectorCompareTypesTest );
+
+  CPPUNIT_TEST( testCompareTypes );
+
+  CPPUNIT_TEST_SUITE_END();
+
+private:
+  template <typename T, typename T2>
+  typename CompareTypes<T, T2>::supertype
+  average(const T & val1, const T2 & val2)
+    {
+      return (val1 + val2) / 2;
+    }
+
+public:
+  void
+  testCompareTypes()
+    {
+      VectorValue<float> fvec;
+      VectorValue<double> dvec;
+
+      auto ftype = fvec * 1;
+      auto dtype = dvec * 1;
+
+      {
+        bool assertion = std::is_same<decltype(ftype), TypeVector<float>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        bool assertion = std::is_same<decltype(dtype), TypeVector<double>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(ftype, ftype);
+        bool assertion = std::is_same<decltype(temp), TypeVector<float>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(ftype, dtype);
+        bool assertion = std::is_same<decltype(temp), TypeVector<double>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(fvec, fvec);
+        bool assertion = std::is_same<decltype(temp), VectorValue<float>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(fvec, dvec);
+        bool assertion = std::is_same<decltype(temp), VectorValue<double>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(fvec, dtype);
+        bool assertion = std::is_same<decltype(temp), VectorValue<double>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+      {
+        auto temp = average(ftype, dvec);
+        bool assertion = std::is_same<decltype(temp), VectorValue<double>>::value;
+        CPPUNIT_ASSERT(assertion);
+      }
+    }
+};
+
+
 CPPUNIT_TEST_SUITE_REGISTRATION( RealVectorValueTest );
 CPPUNIT_TEST_SUITE_REGISTRATION( NumberVectorValueTest );
 CPPUNIT_TEST_SUITE_REGISTRATION( ComplexVectorValueTest );
+CPPUNIT_TEST_SUITE_REGISTRATION( VectorCompareTypesTest );

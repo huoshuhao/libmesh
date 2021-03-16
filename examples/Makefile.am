@@ -15,6 +15,7 @@ SUBDIRS = \
 	adjoints/adjoints_ex4 \
 	adjoints/adjoints_ex5 \
 	adjoints/adjoints_ex6 \
+	adjoints/adjoints_ex7 \
 	eigenproblems/eigenproblems_ex1 \
 	eigenproblems/eigenproblems_ex2 \
 	eigenproblems/eigenproblems_ex3 \
@@ -22,6 +23,7 @@ SUBDIRS = \
 	fem_system/fem_system_ex2 \
 	fem_system/fem_system_ex3 \
 	fem_system/fem_system_ex4 \
+	fem_system/fem_system_ex5 \
 	solution_transfer/solution_transfer_ex1 \
 	miscellaneous/miscellaneous_ex1 \
 	miscellaneous/miscellaneous_ex2 \
@@ -63,7 +65,8 @@ SUBDIRS = \
 	vector_fe/vector_fe_ex1 \
 	vector_fe/vector_fe_ex2 \
 	vector_fe/vector_fe_ex3 \
-        vector_fe/vector_fe_ex4
+        vector_fe/vector_fe_ex4 \
+        vector_fe/vector_fe_ex5
 
 AUTOMAKE_OPTIONS = subdir-objects
 

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -136,6 +136,7 @@ int main(int argc, char ** argv)
           // Error estimation objects, see Adaptivity Example 2 for details
           ErrorVector error;
           KellyErrorEstimator error_estimator;
+          error_estimator.use_unweighted_quadrature_rules = true;
 
           // Compute the error for each active element
           error_estimator.estimate_error(system, error);
@@ -242,6 +243,9 @@ void assemble_1D(EquationSystems & es,
   // get mapped.
   std::vector<dof_id_type> dof_indices;
 
+  // The global system matrix
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
+
   // We now loop over all the active elements in the mesh in order to calculate
   // the matrix and right-hand-side contribution from each element. Use a
   // const_element_iterator to loop over the elements. We make
@@ -316,7 +320,7 @@ void assemble_1D(EquationSystems & es,
       dof_map.constrain_element_matrix_and_vector (Ke, Fe, dof_indices);
 
       // Add Ke and Fe to the global matrix and right-hand-side.
-      system.matrix->add_matrix(Ke, dof_indices);
+      matrix.add_matrix(Ke, dof_indices);
       system.rhs->add_vector(Fe, dof_indices);
     }
 #endif // #ifdef LIBMESH_ENABLE_AMR

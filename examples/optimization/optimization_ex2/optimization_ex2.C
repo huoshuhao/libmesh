@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -49,6 +49,7 @@
 #include "libmesh/dirichlet_boundaries.h"
 #include "libmesh/optimization_system.h"
 #include "libmesh/optimization_solver.h"
+#include "libmesh/parallel.h"
 
 // Bring in everything from the libMesh namespace
 using namespace libMesh;
@@ -515,7 +516,7 @@ int main (int argc, char ** argv)
 
   // We need to close the matrix so that we can use it to store the
   // Hessian during the solve.
-  system.matrix->close();
+  system.get_system_matrix().close();
   system.solve();
 
   // Print convergence information

@@ -1,9 +1,3 @@
-// Ignore unused parameter warnings coming from cppunit headers
-#include <libmesh/ignore_warnings.h>
-#include <cppunit/extensions/HelperMacros.h>
-#include <cppunit/TestCase.h>
-#include <libmesh/restore_warnings.h>
-
 // libmesh includes
 #include <libmesh/dense_matrix.h>
 #include <libmesh/dense_vector.h>
@@ -12,15 +6,8 @@
 #include "libmesh/petsc_macro.h"
 #endif
 
-// THE CPPUNIT_TEST_SUITE_END macro expands to code that involves
-// std::auto_ptr, which in turn produces -Wdeprecated-declarations
-// warnings.  These can be ignored in GCC as long as we wrap the
-// offending code in appropriate pragmas.  We can't get away with a
-// single ignore_warnings.h inclusion at the beginning of this file,
-// since the libmesh headers pull in a restore_warnings.h at some
-// point.  We also don't bother restoring warnings at the end of this
-// file since it's not a header.
-#include <libmesh/ignore_warnings.h>
+#include "libmesh_cppunit.h"
+
 
 using namespace libMesh;
 
@@ -38,6 +25,7 @@ public:
   CPPUNIT_TEST(testEVDreal);
   CPPUNIT_TEST(testEVDcomplex);
   CPPUNIT_TEST(testComplexSVD);
+  CPPUNIT_TEST(testSubMatrix);
 
   CPPUNIT_TEST_SUITE_END();
 
@@ -46,67 +34,57 @@ private:
 
   void testOuterProduct()
   {
-    DenseVector<Real> a(2);
-    a(0) = 1.0;
-    a(1) = 2.0;
-
-    DenseVector<Real> b(3);
-    b(0) = 3.0;
-    b(1) = 4.0;
-    b(2) = 5.0;
+    DenseVector<Real> a = {1.0, 2.0};
+    DenseVector<Real> b = {3.0, 4.0, 5.0};
 
     DenseMatrix<Real> a_times_b;
     a_times_b.outer_product(a, b);
 
-    DenseMatrix<Real> a_times_b_correct(2, 3);
-    a_times_b_correct(0, 0) = 3.0;
-    a_times_b_correct(0, 1) = 4.0;
-    a_times_b_correct(0, 2) = 5.0;
-    a_times_b_correct(1, 0) = 6.0;
-    a_times_b_correct(1, 1) = 8.0;
-    a_times_b_correct(1, 2) = 10.0;
+    DenseMatrix<Real> a_times_b_correct(2, 3,
+                                        {3., 4., 5.,
+                                         6., 8., 10.});
 
     for (unsigned int i = 0; i < a.size(); ++i)
       for (unsigned int j = 0; j < b.size(); ++j)
-        CPPUNIT_ASSERT_DOUBLES_EQUAL(libmesh_real(a_times_b(i,j)), libmesh_real(a_times_b_correct(i,j)), TOLERANCE*TOLERANCE);
+        LIBMESH_ASSERT_FP_EQUAL(libmesh_real(a_times_b(i,j)), libmesh_real(a_times_b_correct(i,j)), TOLERANCE*TOLERANCE);
   }
 
   void testSVD()
   {
     DenseMatrix<Number> U, VT;
     DenseVector<Real> sigma;
-    DenseMatrix<Number> A;
-
-    A.resize(3, 2);
-    A(0,0) = 1.0; A(0,1) = 2.0;
-    A(1,0) = 3.0; A(1,1) = 4.0;
-    A(2,0) = 5.0; A(2,1) = 6.0;
+    DenseMatrix<Number> A(3, 2, {
+        1.0, 2.0,
+        3.0, 4.0,
+        5.0, 6.0});
 
     A.svd(sigma, U, VT);
 
     // Solution for this case is (verified with numpy)
-    DenseMatrix<Number> true_U(3,2), true_VT(2,2);
-    DenseVector<Real> true_sigma(2);
-    true_U(0,0) = -2.298476964000715e-01; true_U(0,1) = 8.834610176985250e-01;
-    true_U(1,0) = -5.247448187602936e-01; true_U(1,1) = 2.407824921325463e-01;
-    true_U(2,0) = -8.196419411205157e-01; true_U(2,1) = -4.018960334334318e-01;
+    DenseMatrix<Number> true_U(3, 2, {
+        -2.298476964000715e-01, 8.834610176985250e-01,
+        -5.247448187602936e-01, 2.407824921325463e-01,
+        -8.196419411205157e-01, -4.018960334334318e-01});
 
-    true_VT(0,0) = -6.196294838293402e-01; true_VT(0,1) = -7.848944532670524e-01;
-    true_VT(1,0) = -7.848944532670524e-01; true_VT(1,1) = 6.196294838293400e-01;
+    DenseMatrix<Number> true_VT(2, 2, {
+        -6.196294838293402e-01, -7.848944532670524e-01,
+        -7.848944532670524e-01, 6.196294838293400e-01});
 
-    true_sigma(0) = 9.525518091565109e+00;
-    true_sigma(1) = 5.143005806586446e-01;
+    DenseVector<Real> true_sigma = {9.525518091565109e+00, 5.143005806586446e-01};
+
+    // Tolerance is bounded by the double literals above and by using Real
+    const Real tol = std::max(Real(1e-12), TOLERANCE*TOLERANCE);
 
     for (unsigned i=0; i<U.m(); ++i)
       for (unsigned j=0; j<U.n(); ++j)
-        CPPUNIT_ASSERT_DOUBLES_EQUAL( libmesh_real(U(i,j)), libmesh_real(true_U(i,j)), TOLERANCE*TOLERANCE);
+        LIBMESH_ASSERT_FP_EQUAL( libmesh_real(U(i,j)), libmesh_real(true_U(i,j)), tol);
 
     for (unsigned i=0; i<VT.m(); ++i)
       for (unsigned j=0; j<VT.n(); ++j)
-        CPPUNIT_ASSERT_DOUBLES_EQUAL( libmesh_real(VT(i,j)), libmesh_real(true_VT(i,j)), TOLERANCE*TOLERANCE);
+        LIBMESH_ASSERT_FP_EQUAL( libmesh_real(VT(i,j)), libmesh_real(true_VT(i,j)), tol);
 
     for (unsigned i=0; i<sigma.size(); ++i)
-      CPPUNIT_ASSERT_DOUBLES_EQUAL(sigma(i), true_sigma(i), TOLERANCE*TOLERANCE);
+      LIBMESH_ASSERT_FP_EQUAL(sigma(i), true_sigma(i), tol);
   }
 
   // This function is called by testEVD for different matrices.  The
@@ -116,7 +94,8 @@ private:
   // in-place.
   void testEVD_helper(DenseMatrix<Real> & A,
                       std::vector<Real> true_lambda_real,
-                      std::vector<Real> true_lambda_imag)
+                      std::vector<Real> true_lambda_imag,
+                      Real tol)
   {
     // Note: see bottom of this file, we only do this test if PETSc is
     // available, but this function currently only exists if we're
@@ -142,7 +121,7 @@ private:
     for (unsigned eigenval=0; eigenval<N; ++eigenval)
       {
         // Only check real eigenvalues
-        if (std::abs(lambda_imag(eigenval)) < TOLERANCE*TOLERANCE)
+        if (std::abs(lambda_imag(eigenval)) < tol*tol)
           {
             // remove print libMesh::out << "Checking eigenvalue: " << eigenval << std::endl;
             DenseVector<Real> lhs(N), rhs(N);
@@ -156,7 +135,7 @@ private:
             // Subtract and assert that the norm of the difference is
             // below some tolerance.
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
           }
         else
           {
@@ -181,7 +160,7 @@ private:
               }
 
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
 
             // libMesh::out << "lhs=" << std::endl;
             // lhs.print_scientific(libMesh::out, /*precision=*/15);
@@ -200,7 +179,7 @@ private:
               }
 
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
 
             // libMesh::out << "lhs=" << std::endl;
             // lhs.print_scientific(libMesh::out, /*precision=*/15);
@@ -223,7 +202,7 @@ private:
     for (unsigned eigenval=0; eigenval<N; ++eigenval)
       {
         // Only check real eigenvalues
-        if (std::abs(lambda_imag(eigenval)) < TOLERANCE*TOLERANCE)
+        if (std::abs(lambda_imag(eigenval)) < tol*tol)
           {
             // remove print libMesh::out << "Checking eigenvalue: " << eigenval << std::endl;
             DenseVector<Real> lhs(N), rhs(N);
@@ -235,7 +214,7 @@ private:
               }
 
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
           }
         else
           {
@@ -260,7 +239,7 @@ private:
               }
 
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
 
             // 2.)
             lhs.zero();
@@ -273,7 +252,7 @@ private:
               }
 
             lhs -= rhs;
-            CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(TOLERANCE)*TOLERANCE);
+            LIBMESH_ASSERT_FP_EQUAL(/*expected=*/0., /*actual=*/lhs.l2_norm(), std::sqrt(tol)*tol);
 
             // We'll skip the second member of the complex conjugate
             // pair.  If the first one worked, the second one should
@@ -298,8 +277,8 @@ private:
         // the test problems.  I'm not sure what controls the accuracy
         // of the eigenvalue computation in LAPACK, there is no way to
         // set a tolerance in the LAPACKgeev_ interface.
-        CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/true_lambda_real[i], /*actual=*/lambda_real(i), std::sqrt(TOLERANCE)*TOLERANCE);
-        CPPUNIT_ASSERT_DOUBLES_EQUAL(/*expected=*/true_lambda_imag[i], /*actual=*/lambda_imag(i), std::sqrt(TOLERANCE)*TOLERANCE);
+        LIBMESH_ASSERT_FP_EQUAL(/*expected=*/true_lambda_real[i], /*actual=*/lambda_real(i), std::sqrt(tol)*tol);
+        LIBMESH_ASSERT_FP_EQUAL(/*expected=*/true_lambda_imag[i], /*actual=*/lambda_imag(i), std::sqrt(tol)*tol);
       }
 #endif
   }
@@ -320,7 +299,7 @@ private:
     std::vector<Real> true_lambda_imag(3); // all zero
 
     // call helper function to compute and verify results.
-    testEVD_helper(A, true_lambda_real, true_lambda_imag);
+    testEVD_helper(A, true_lambda_real, true_lambda_imag, TOLERANCE);
   }
 
   void testEVDcomplex()
@@ -341,8 +320,12 @@ private:
     true_lambda_imag[1] = 17.60083096447099;
     true_lambda_imag[2] = -17.60083096447099;
 
+    // We're good up to double precision (due to the truncated
+    // literals above) or Real precision, whichever is worse
+    const Real tol = std::max(Real(1e-6), TOLERANCE);
+
     // call helper function to compute and verify results
-    testEVD_helper(A, true_lambda_real, true_lambda_imag);
+    testEVD_helper(A, true_lambda_real, true_lambda_imag, tol);
   }
 
   void testComplexSVD()
@@ -363,15 +346,28 @@ private:
     true_sigma(2) = 6.64680908281e-07;
 
     for (unsigned i=0; i<sigma.size(); ++i)
-      CPPUNIT_ASSERT_DOUBLES_EQUAL(sigma(i), true_sigma(i), 1.e-10);
+      LIBMESH_ASSERT_FP_EQUAL(sigma(i), true_sigma(i), 1.e-10);
 #endif
   }
 
+  void testSubMatrix()
+  {
+    DenseMatrix<Number> A(4, 3);
+    A(0,0) = 1.0; A(0,1) = 2.0; A(0,2) = 3.0;
+    A(1,0) = 4.0; A(1,1) = 5.0; A(1,2) = 6.0;
+    A(2,0) = 7.0; A(2,1) = 8.0; A(2,2) = 9.0;
+    A(3,0) =10.0; A(3,1) =11.0; A(3,2) =12.0;
+
+    DenseMatrix<Number> B(2, 2);
+    B(0,0) = 7.0; B(0,1) = 8.0;
+    B(1,0) =10.0; B(1,1) =11.0;
+
+    DenseMatrix<Number> C = A.sub_matrix(2, 2, 0, 2);
+    CPPUNIT_ASSERT(B == C);
+  }
 };
 
-// Only run the test if we expect it can actually work!
+// These tests require PETSc
 #ifdef LIBMESH_HAVE_PETSC
-#if !PETSC_VERSION_LESS_THAN(3,1,0)
 CPPUNIT_TEST_SUITE_REGISTRATION(DenseMatrixTest);
-#endif
 #endif

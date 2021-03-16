@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -25,6 +25,7 @@
 #include "libmesh/id_types.h"
 #include "libmesh/mesh_base.h"
 #include "libmesh/reference_counted_object.h"
+#include "libmesh/auto_ptr.h" // libmesh_make_unique
 
 // C++ Includes
 #include <unordered_map>
@@ -35,7 +36,9 @@ namespace libMesh
 // Forward Declarations
 class CouplingMatrix;
 class Elem;
-
+#ifdef LIBMESH_ENABLE_PERIODIC
+class PeriodicBoundaries;
+#endif
 
 /**
  * This abstract base class defines the interface by which library
@@ -130,6 +133,23 @@ class Elem;
  * (e.g. subdomain-restricted variables on a neighboring subdomain)
  * will be unaffected.
  *
+ * Typical usage of the GhostingFunctor would be to add a geometric ghosting
+ * functor before the mesh preparation is completed; progmatically, this would
+ * be before MeshBase::prepare_for_use() is called, but many different libMesh
+ * idioms internally call this function. The algebraic and coupling ghosting
+ * functors normally are added before EquationSystems::init() is called.
+ * However, in some circumstances, solution evaluation may be needed within the
+ * GhostingFunctor in order to determine the ghosting, in which case the appropriate
+ * functor would need to be added after EquationSystems::init(). In this case,
+ * the user will need to reinitialize certain parts of the DofMap for
+ * algebraic and coupling functors. For algebraic ghosting functors, the
+ * user will need to call DofMap::reinit_send_list() and then reinitialize
+ * any NumericVectors that are GHOSTED, e.g. the System::current_local_solution.
+ * For coupling ghosting, the user will also need to recompute the sparsity
+ * pattern via DofMap::clear_sparsity() and then DofMap::compute_sparsity() and
+ * then reinitialize any SparseMatrix objects attached to the System, e.g.
+ * the system.get_system_matrix().
+ *
  * \author Roy H. Stogner
  * \date 2016
  */
@@ -140,12 +160,51 @@ public:
   /**
    * Constructor.  Empty in the base class.
    */
-  GhostingFunctor() {}
+  GhostingFunctor(): _mesh(nullptr) {}
+
+  /**
+   * Constructor using mesh
+   */
+  GhostingFunctor(const MeshBase & mesh): _mesh(&mesh) {}
+
+  /**
+   * Copy Constructor
+   */
+  GhostingFunctor(const GhostingFunctor & other) :
+   ReferenceCountedObject<GhostingFunctor>(other),
+   _mesh (other._mesh)
+  {}
 
   /**
    * Virtual destructor; this is an abstract base class.
    */
   virtual ~GhostingFunctor() {}
+
+  /**
+   * A clone() is needed because GhostingFunctor can not be shared between
+   * different meshes. The operations in  GhostingFunctor are mesh dependent.
+   */
+  virtual std::unique_ptr<GhostingFunctor> clone () const
+  // Let us return nullptr for backward compatibility.
+  // We will come back to mark this function as pure virtual
+  // once the API upgrade is done.
+  { return nullptr; }
+
+  /**
+   * It should be called after cloning a ghosting functor.
+   * Ghosting functor is mesh dependent
+   */
+  virtual void set_mesh(const MeshBase * mesh) { _mesh = mesh; }
+
+#ifdef LIBMESH_ENABLE_PERIODIC
+  // Set PeriodicBoundaries to couple
+  virtual void set_periodic_boundaries(const PeriodicBoundaries *) {}
+#endif
+
+  /**
+   *  Return the mesh associated with ghosting functor
+   */
+  const MeshBase * get_mesh() const { libmesh_assert(_mesh); return _mesh; }
 
   /**
    * What elements do we care about and what variables do we care
@@ -202,6 +261,9 @@ public:
    * after a redistribution is complete.
    */
   virtual void delete_remote_elements () {};
+
+protected:
+  const MeshBase * _mesh;
 };
 
 } // namespace libMesh

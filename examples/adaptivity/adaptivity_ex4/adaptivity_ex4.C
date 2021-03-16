@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -387,6 +387,13 @@ int main(int argc, char ** argv)
               ErrorVector error;
               LaplacianErrorEstimator error_estimator;
 
+              // This is another subclass of JumpErrorEstimator, based
+              // on measuring discontinuities across sides between
+              // elements, and we can tell it to use a cheaper
+              // "unweighted" quadrature rule when numerically
+              // integrating those discontinuities.
+              error_estimator.use_unweighted_quadrature_rules = true;
+
               error_estimator.estimate_error(system, error);
               mesh_refinement.flag_elements_by_elem_fraction (error);
 
@@ -754,6 +761,9 @@ void assemble_biharmonic(EquationSystems & es,
   // the element degrees of freedom get mapped.
   std::vector<dof_id_type> dof_indices;
 
+  // The global system matrix
+  SparseMatrix<Number> & matrix = system.get_system_matrix();
+
   // Now we will loop over all the elements in the mesh.  We will
   // compute the element matrix and right-hand-side contribution.  See
   // example 3 for a discussion of the element iterators.
@@ -833,8 +843,9 @@ void assemble_biharmonic(EquationSystems & es,
       // problem: Dirichlet boundary conditions include *both*
       // boundary values and boundary normal fluxes.
       {
-        // Start logging the boundary condition computation
-        perf_log.push ("BCs");
+        // Start logging the boundary condition computation.  We use a
+        // macro to log everything in this scope.
+        LOG_SCOPE_WITH("BCs", "", perf_log);
 
         // The penalty values, for solution boundary trace and flux.
         const Real penalty = 1e10;
@@ -910,9 +921,6 @@ void assemble_biharmonic(EquationSystems & es,
 
                 }
             }
-
-        // Stop logging the boundary condition computation
-        perf_log.pop ("BCs");
       }
 
       for (unsigned int qp=0; qp<qrule->n_points(); qp++)
@@ -925,15 +933,11 @@ void assemble_biharmonic(EquationSystems & es,
       // and NumericVector::add_vector() members do this for us.
       // Start logging the insertion of the local (element)
       // matrix and vector into the global matrix and vector
-      perf_log.push ("matrix insertion");
+      LOG_SCOPE_WITH("matrix insertion", "", perf_log);
 
       dof_map.constrain_element_matrix_and_vector(Ke, Fe, dof_indices);
-      system.matrix->add_matrix (Ke, dof_indices);
+      matrix.add_matrix (Ke, dof_indices);
       system.rhs->add_vector    (Fe, dof_indices);
-
-      // Stop logging the insertion of the local (element)
-      // matrix and vector into the global matrix and vector
-      perf_log.pop ("matrix insertion");
     }
 
   // That's it.  We don't need to do anything else to the

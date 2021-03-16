@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -122,7 +122,7 @@ public:
    * case of \p root_id equal to \p DofObject::invalid_processor_id
    * this function performs an allgather.
    */
-  void gather (const processor_id_type root_id, DistributedMesh &) const;
+  void gather (const processor_id_type root_id, MeshBase &) const;
 
   /**
    * This method takes an input \p DistributedMesh which may be
@@ -132,7 +132,7 @@ public:
    * will be serialized on each processor.  Since this method is
    * collective it must be called by all processors.
    */
-  void allgather (DistributedMesh & mesh) const
+  void allgather (MeshBase & mesh) const
   { MeshCommunication::gather(DofObject::invalid_processor_id, mesh); }
 
   /**
@@ -265,8 +265,11 @@ void connect_children(const MeshBase & mesh,
                       std::set<const Elem *, CompareElemIdsByLevel> & connected_elements);
 
 // Take a set of elements and insert all elements' ancestors and
-// subactive descendants as well.
-void connect_families(std::set<const Elem *, CompareElemIdsByLevel> & connected_elements);
+// subactive descendants as well.  If a mesh is provided and has any
+// constraint rows, insert elements with the constraining nodes for
+// any constrained nodes in our set.
+void connect_families(std::set<const Elem *, CompareElemIdsByLevel> & connected_elements,
+                      const MeshBase * mesh = nullptr);
 
 // Take a set of elements and create a set of connected nodes.
 void reconnect_nodes (const std::set<const Elem *, CompareElemIdsByLevel> & connected_elements,

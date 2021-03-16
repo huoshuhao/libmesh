@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -231,6 +231,9 @@ void assemble_ellipticdg(EquationSystems & es,
   // the element degrees of freedom get mapped.
   std::vector<dof_id_type> dof_indices;
 
+  // The global system matrix
+  SparseMatrix<Number> & matrix = ellipticdg_system.get_system_matrix();
+
   // Now we will loop over all the elements in the mesh.  We will
   // compute first the element interior matrix and right-hand-side contribution
   // and then the element and neighbors boundary matrix contributions.
@@ -280,7 +283,7 @@ void assemble_ellipticdg(EquationSystems & es,
               std::unique_ptr<const Elem> elem_side (elem->build_side_ptr(side));
               // h element dimension to compute the interior penalty penalty parameter
               const unsigned int elem_b_order = static_cast<unsigned int> (fe_elem_face->get_order());
-              const double h_elem = elem->volume()/elem_side->volume() * 1./pow(elem_b_order, 2.);
+              const Real h_elem = elem->volume()/elem_side->volume() * 1./pow(elem_b_order, 2.);
 
               for (unsigned int qp=0; qp<qface.n_points(); qp++)
                 {
@@ -341,7 +344,7 @@ void assemble_ellipticdg(EquationSystems & es,
                   const unsigned int elem_b_order = static_cast<unsigned int>(fe_elem_face->get_order());
                   const unsigned int neighbor_b_order = static_cast<unsigned int>(fe_neighbor_face->get_order());
                   const double side_order = (elem_b_order + neighbor_b_order)/2.;
-                  const double h_elem = (elem->volume()/elem_side->volume()) * 1./pow(side_order,2.);
+                  const Real h_elem = (elem->volume()/elem_side->volume()) * 1./pow(side_order,2.);
 
                   // The quadrature point locations on the neighbor side
                   std::vector<Point> qface_neighbor_point;
@@ -364,11 +367,9 @@ void assemble_ellipticdg(EquationSystems & es,
                                                 qface.get_points(),
                                                 qface_neighbor_point);
                   else
-                    FEInterface::inverse_map (elem->dim(),
-                                              fe->get_fe_type(),
-                                              neighbor,
-                                              qface_point,
-                                              qface_neighbor_point);
+                    FEMap::inverse_map (elem->dim(), neighbor,
+                                        qface_point,
+                                        qface_neighbor_point);
 
                   // Calculate the neighbor element shape functions at those locations
                   fe_neighbor_face->reinit(neighbor, &qface_neighbor_point);
@@ -471,10 +472,10 @@ void assemble_ellipticdg(EquationSystems & es,
                   // The element and neighbor boundary matrix are now built
                   // for this side.  Add them to the global matrix
                   // The SparseMatrix::add_matrix() members do this for us.
-                  ellipticdg_system.matrix->add_matrix(Kne, neighbor_dof_indices, dof_indices);
-                  ellipticdg_system.matrix->add_matrix(Ken, dof_indices, neighbor_dof_indices);
-                  ellipticdg_system.matrix->add_matrix(Kee, dof_indices);
-                  ellipticdg_system.matrix->add_matrix(Knn, neighbor_dof_indices);
+                  matrix.add_matrix(Kne, neighbor_dof_indices, dof_indices);
+                  matrix.add_matrix(Ken, dof_indices, neighbor_dof_indices);
+                  matrix.add_matrix(Kee, dof_indices);
+                  matrix.add_matrix(Knn, neighbor_dof_indices);
                 }
             }
         }
@@ -482,7 +483,7 @@ void assemble_ellipticdg(EquationSystems & es,
       // for this element.  Add them to the global matrix and
       // right-hand-side vector.  The SparseMatrix::add_matrix()
       // and NumericVector::add_vector() members do this for us.
-      ellipticdg_system.matrix->add_matrix(Ke, dof_indices);
+      matrix.add_matrix(Ke, dof_indices);
       ellipticdg_system.rhs->add_vector(Fe, dof_indices);
     }
 
@@ -569,8 +570,8 @@ int main (int argc, char** argv)
         command_line_value(std::string("element_type"),
                            std::string("MONOMIAL"));
 
-      if (fe_str != "MONOMIAL" || fe_str != "XYZ")
-        libmesh_error_msg("Error: This example must be run with MONOMIAL or XYZ element types.");
+      libmesh_error_msg_if(fe_str != "MONOMIAL" || fe_str != "XYZ",
+                           "Error: This example must be run with MONOMIAL or XYZ element types.");
 
       ellipticdg_system.add_variable ("u", p_order, Utility::string_to_enum<FEFamily>(fe_str));
     }

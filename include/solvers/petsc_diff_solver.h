@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -28,9 +28,16 @@
 #include "libmesh/diff_solver.h"
 #include "libmesh/petsc_macro.h"
 #include "libmesh/petsc_dm_wrapper.h"
+#include "libmesh/wrapped_petsc.h"
 
 // PETSc includes
-# include <petscsnes.h>
+#ifdef I
+# define LIBMESH_SAW_I
+#endif
+#include <petscsnes.h>
+#ifndef LIBMESH_SAW_I
+# undef I // Avoid complex.h contamination
+#endif
 
 namespace libMesh
 {
@@ -91,16 +98,14 @@ protected:
   /**
    * Nonlinear solver context
    */
-  SNES _snes;
+  WrappedPetsc<SNES> _snes;
 
   /**
    * Wrapper object for interacting with PetscDM
    */
 #if !PETSC_VERSION_LESS_THAN(3,7,3)
-#ifdef LIBMESH_ENABLE_AMR
-#ifdef LIBMESH_HAVE_METAPHYSICL
+#if defined(LIBMESH_ENABLE_AMR) && defined(LIBMESH_HAVE_METAPHYSICL)
   PetscDMWrapper _dm_wrapper;
-#endif
 #endif
 #endif
 

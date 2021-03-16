@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -65,16 +65,21 @@ class FrequencySystem : public LinearImplicitSystem
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   FrequencySystem (EquationSystems & es,
                    const std::string & name_in,
                    const unsigned int number_in);
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions/defaults as its base class.
+   * - The destructor is defaulted out-of-line.
    */
-  ~FrequencySystem ();
+  FrequencySystem (const FrequencySystem &) = delete;
+  FrequencySystem & operator= (const FrequencySystem &) = delete;
+  FrequencySystem (FrequencySystem &&) = default;
+  FrequencySystem & operator= (FrequencySystem &&) = delete;
+  virtual ~FrequencySystem ();
 
   /**
    * Clear all the data structures associated with

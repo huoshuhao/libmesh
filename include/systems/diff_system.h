@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -21,7 +21,6 @@
 #define LIBMESH_DIFF_SYSTEM_H
 
 // Local Includes
-#include "libmesh/auto_ptr.h" // deprecated
 #include "libmesh/diff_context.h"
 #include "libmesh/diff_physics.h"
 #include "libmesh/diff_qoi.h"
@@ -58,16 +57,25 @@ class DifferentiableSystem : public ImplicitSystem,
 public:
 
   /**
-   * Constructor.  Optionally initializes required
-   * data structures.
+   * Constructor.
    */
   DifferentiableSystem (EquationSystems & es,
                         const std::string & name,
                         const unsigned int number);
 
   /**
-   * Destructor.
+   * Special functions.
+   * - This class has the same restrictions as its base class.
+   * - This class also can't be default move constructed because it
+   *   manually manages the memory of the _diff_physics and diff_qoi
+   *   objects.
+   * - The destructor potentially cleans up the _diff_physics and
+   *   diff_qoi objects.
    */
+  DifferentiableSystem (const DifferentiableSystem &) = delete;
+  DifferentiableSystem & operator= (const DifferentiableSystem &) = delete;
+  DifferentiableSystem (DifferentiableSystem &&) = delete;
+  DifferentiableSystem & operator= (DifferentiableSystem &&) = delete;
   virtual ~DifferentiableSystem ();
 
   /**
@@ -117,12 +125,6 @@ public:
    */
   virtual std::pair<unsigned int, Real>
   get_linear_solve_parameters() const override;
-
-  /**
-   * Releases a pointer to a linear solver acquired by
-   * \p this->get_linear_solver()
-   */
-  virtual void release_linear_solver(LinearSolver<Number> *) const override;
 
   /**
    * Assembles a residual in \p rhs and/or a jacobian in \p matrix,
@@ -397,6 +399,7 @@ protected:
    */
   void add_second_order_dot_vars();
 
+#ifdef LIBMESH_ENABLE_DIRICHLET
   /**
    * Helper function to and Dirichlet boundary conditions to "dot" variable
    * cousins of second order variables in the system. The function takes the
@@ -406,6 +409,7 @@ protected:
    * functors for the var_idx DirichletBoundary.
    */
   void add_dot_var_dirichlet_bcs( unsigned int var_idx, unsigned int dot_var_idx);
+#endif
 
 };
 

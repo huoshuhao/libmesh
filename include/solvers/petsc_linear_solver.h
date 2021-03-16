@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -26,9 +26,16 @@
 
 #include "libmesh/petsc_macro.h"
 #include "libmesh/petsc_solver_exception.h"
+#include "libmesh/wrapped_petsc.h"
 
 // Petsc include files.
+#ifdef I
+# define LIBMESH_SAW_I
+#endif
 #include <petscksp.h>
+#ifndef LIBMESH_SAW_I
+# undef I // Avoid complex.h contamination
+#endif
 
 // Local includes
 #include "libmesh/linear_solver.h"
@@ -36,6 +43,7 @@
 // C++ includes
 #include <cstddef>
 #include <vector>
+#include <memory>
 
 //--------------------------------------------------------------------
 // Functions with C linkage to pass to PETSc.  PETSc will call these
@@ -45,40 +53,30 @@
 // Give them an obscure name to avoid namespace pollution.
 extern "C"
 {
-#if PETSC_RELEASE_LESS_THAN(3,0,1)
   /**
    * This function is called by PETSc to initialize the preconditioner.
    * ctx will hold the Preconditioner.
    */
-  PetscErrorCode libmesh_petsc_preconditioner_setup (void * ctx);
+  PetscErrorCode libmesh_petsc_preconditioner_setup (PC);
 
   /**
    * This function is called by PETSc to actually apply the preconditioner.
    * ctx will hold the Preconditioner.
    */
-  PetscErrorCode libmesh_petsc_preconditioner_apply(void * ctx, Vec x, Vec y);
-#else
-  PetscErrorCode libmesh_petsc_preconditioner_setup (PC);
   PetscErrorCode libmesh_petsc_preconditioner_apply(PC, Vec x, Vec y);
-#endif
 
 #if LIBMESH_ENABLE_DEPRECATED
-#if PETSC_RELEASE_LESS_THAN(3,0,1)
   /**
    * This function is called by PETSc to initialize the preconditioner.
    * ctx will hold the Preconditioner.
    */
-  PetscErrorCode __libmesh_petsc_preconditioner_setup (void * ctx);
+  PetscErrorCode __libmesh_petsc_preconditioner_setup (PC);
 
   /**
    * This function is called by PETSc to actually apply the preconditioner.
    * ctx will hold the Preconditioner.
    */
-  PetscErrorCode __libmesh_petsc_preconditioner_apply(void * ctx, Vec x, Vec y);
-#else
-  PetscErrorCode __libmesh_petsc_preconditioner_setup (PC);
   PetscErrorCode __libmesh_petsc_preconditioner_apply(PC, Vec x, Vec y);
-#endif
 #endif
 } // end extern "C"
 
@@ -109,7 +107,7 @@ public:
   /**
    * Destructor.
    */
-  ~PetscLinearSolver ();
+  virtual ~PetscLinearSolver () = default;
 
   /**
    * Release all memory and clear data structures.
@@ -237,7 +235,7 @@ public:
    * This is useful if you are for example setting a custom
    * convergence test with KSPSetConvergenceTest().
    */
-  KSP ksp() { this->init(); return _ksp; }
+  KSP ksp();
 
   /**
    * Fills the input vector with the sequence of residual norms
@@ -290,32 +288,32 @@ private:
   /**
    * Krylov subspace context
    */
-  KSP _ksp;
+  WrappedPetsc<KSP> _ksp;
 
   /**
    * PETSc index set containing the dofs on which to solve (\p nullptr
    * means solve on all dofs).
    */
-  IS _restrict_solve_to_is;
+  WrappedPetsc<IS> _restrict_solve_to_is;
 
   /**
    * PETSc index set, complement to \p _restrict_solve_to_is.  This
    * will be created on demand by the method \p
    * _create_complement_is().
    */
-  IS _restrict_solve_to_is_complement;
+  WrappedPetsc<IS> _restrict_solve_to_is_complement;
 
   /**
    * \returns The local size of \p _restrict_solve_to_is.
    */
-  PetscInt _restrict_solve_to_is_local_size() const;
+  PetscInt restrict_solve_to_is_local_size() const;
 
   /**
    * Creates \p _restrict_solve_to_is_complement to contain all
    * indices that are local in \p vec_in, except those that are
    * contained in \p _restrict_solve_to_is.
    */
-  void _create_complement_is (const NumericVector<T> & vec_in);
+  void create_complement_is (const NumericVector<T> & vec_in);
 
   /**
    * If restrict-solve-to-subset mode is active, this member decides
@@ -323,60 +321,6 @@ private:
    */
   SubsetSolveMode _subset_solve_mode;
 };
-
-
-/*----------------------- functions ----------------------------------*/
-template <typename T>
-inline
-PetscLinearSolver<T>::~PetscLinearSolver ()
-{
-  this->clear ();
-}
-
-
-
-template <typename T>
-inline PetscInt
-PetscLinearSolver<T>::_restrict_solve_to_is_local_size() const
-{
-  libmesh_assert(_restrict_solve_to_is);
-
-  PetscInt s;
-  int ierr = ISGetLocalSize(_restrict_solve_to_is, &s);
-  LIBMESH_CHKERR(ierr);
-
-  return s;
-}
-
-
-
-template <typename T>
-void
-PetscLinearSolver<T>::_create_complement_is (const NumericVector<T> &
-#if PETSC_VERSION_LESS_THAN(3,0,0)
-                                             // unnamed to avoid compiler "unused parameter" warning
-#else
-                                             vec_in
-#endif
-                                             )
-{
-  libmesh_assert(_restrict_solve_to_is);
-#if PETSC_VERSION_LESS_THAN(3,0,0)
-  // No ISComplement in PETSc 2.3.3
-  libmesh_not_implemented();
-#else
-  if (_restrict_solve_to_is_complement==nullptr)
-    {
-      int ierr = ISComplement(_restrict_solve_to_is,
-                              vec_in.first_local_index(),
-                              vec_in.last_local_index(),
-                              &_restrict_solve_to_is_complement);
-      LIBMESH_CHKERR(ierr);
-    }
-#endif
-}
-
-
 
 } // namespace libMesh
 

@@ -1,5 +1,5 @@
 // The libMesh Finite Element Library.
-// Copyright (C) 2002-2019 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
+// Copyright (C) 2002-2021 Benjamin S. Kirk, John W. Peterson, Roy H. Stogner
 
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
@@ -21,7 +21,7 @@
 #define LIBMESH_SYSTEM_H
 
 // Local Includes
-#include "libmesh/auto_ptr.h" // deprecated
+#include "libmesh/auto_ptr.h" // libmesh_make_unique
 #include "libmesh/elem_range.h"
 #include "libmesh/enum_subset_solve_mode.h" // SUBSET_ZERO
 #include "libmesh/enum_parallel_type.h" // PARALLEL
@@ -32,6 +32,7 @@
 #include "libmesh/reference_counted_object.h"
 #include "libmesh/tensor_value.h" // For point_hessian
 #include "libmesh/variable.h"
+#include "libmesh/enum_matrix_build_type.h"
 
 #ifdef LIBMESH_FORWARD_DECLARE_ENUMS
 namespace libMesh
@@ -48,6 +49,15 @@ enum FEMNormType : int;
 #include <vector>
 #include <memory>
 
+// This define may be useful in --disable-optional builds when it is
+// possible that libmesh will not have any solvers available.
+#if defined(LIBMESH_HAVE_PETSC) || \
+  defined(LIBMESH_HAVE_EIGEN)   || \
+  defined(LIBMESH_HAVE_LASPACK) || \
+  defined(LIBMESH_TRILINOS_HAVE_AZTECOO)
+#define LIBMESH_HAVE_SOLVER 1
+#endif
+
 namespace libMesh
 {
 
@@ -62,6 +72,7 @@ class Parameters;
 class ParameterVector;
 class Point;
 class SensitivityData;
+class Matrix;
 template <typename T> class NumericVector;
 template <typename T> class SparseMatrix;
 template <typename T> class VectorValue;
@@ -101,6 +112,22 @@ public:
   System (EquationSystems & es,
           const std::string & name,
           const unsigned int number);
+
+  /**
+   * Special functions.
+   * - The copy constructor and assignment operator were previously
+   *   declared as private libmesh_not_implemented() functions, this
+   *   is the C++11 way of achieving the same effect.
+   * - The System holds references to Mesh and EquationSystems
+   *   objects, therefore it can't be default move-assigned.
+   * - This class _can_ be default move constructed.
+   * - The destructor dies with an error in dbg/devel modes if libMesh::closed()
+   */
+  System (const System &) = delete;
+  System & operator= (const System &) = delete;
+  System (System &&) = default;
+  System & operator= (System &&) = delete;
+  virtual ~System ();
 
   /**
    * Abstract base class to be used for system initialization.
@@ -221,13 +248,6 @@ public:
                                  bool include_liftfunc,
                                  bool apply_constraints) = 0;
   };
-
-
-
-  /**
-   * Destructor.
-   */
-  virtual ~System ();
 
   /**
    * The type of system.
@@ -745,8 +765,8 @@ public:
   /**
    * Vector iterator typedefs.
    */
-  typedef std::map<std::string, NumericVector<Number> *>::iterator       vectors_iterator;
-  typedef std::map<std::string, NumericVector<Number> *>::const_iterator const_vectors_iterator;
+  typedef std::map<std::string, std::unique_ptr<NumericVector<Number>>>::iterator       vectors_iterator;
+  typedef std::map<std::string, std::unique_ptr<NumericVector<Number>>>::const_iterator const_vectors_iterator;
 
   /**
    * Beginning of vectors container
@@ -1032,10 +1052,9 @@ public:
   /**
    * \returns The number of matrices
    * handled by this system.
-   *
-   * This will return 0 by default but can be overridden.
+   * This is the size of the \p _matrices map
    */
-  virtual unsigned int n_matrices () const;
+  unsigned int n_matrices () const;
 
   /**
    * \returns The number of variables in the system
@@ -1085,7 +1104,9 @@ public:
 
   /**
    * Adds the variable \p var to the list of variables
-   * for this system.
+   * for this system. If \p active_subdomains is either \p nullptr
+   * (the default) or points to an empty set, then it will be assumed that
+   * \p var has no subdomain restrictions
    *
    * \returns The index number for the new variable.
    */
@@ -1096,7 +1117,9 @@ public:
   /**
    * Adds the variable \p var to the list of variables
    * for this system.  Same as before, but assumes \p LAGRANGE
-   * as default value for \p FEType.family.
+   * as default value for \p FEType.family. If \p active_subdomains is either
+   * \p nullptr (the default) or points to an empty set, then it will be assumed
+   * that \p var has no subdomain restrictions
    */
   unsigned int add_variable (const std::string & var,
                              const Order order = FIRST,
@@ -1105,7 +1128,9 @@ public:
 
   /**
    * Adds the variable \p var to the list of variables
-   * for this system.
+   * for this system. If \p active_subdomains is either \p nullptr
+   * (the default) or points to an empty set, then it will be assumed that
+   * \p var has no subdomain restrictions
    *
    * \returns The index number for the new variable.
    */
@@ -1116,7 +1141,9 @@ public:
   /**
    * Adds the variable \p var to the list of variables
    * for this system.  Same as before, but assumes \p LAGRANGE
-   * as default value for \p FEType.family.
+   * as default value for \p FEType.family. If \p active_subdomains is either
+   * \p nullptr (the default) or points to an empty set, then it will be assumed that
+   * \p var has no subdomain restrictions
    */
   unsigned int add_variables (const std::vector<std::string> & vars,
                               const Order order = FIRST,
@@ -1558,9 +1585,18 @@ public:
   std::vector<Number> qoi;
 
   /**
+   * Vector to hold error estimates for qois, either from a steady
+   * state calculation, or from a single unsteady solver timestep. Used
+   * by the library after resizing to match the size of the qoi vector.
+   * User code can use this for accumulating error estimates for example.
+   */
+  std::vector<Number> qoi_error_estimates;
+
+  /**
    * \returns The value of the solution variable \p var at the physical
    * point \p p in the mesh, without knowing a priori which element
-   * contains \p p.
+   * contains \p p, using the degree of freedom coefficients in \p sol
+   * (or in \p current_local_solution if \p sol is left null).
    *
    * \note This function uses \p MeshBase::sub_point_locator(); users
    * may or may not want to call \p MeshBase::clear_point_locator()
@@ -1578,16 +1614,20 @@ public:
    * the method to return 0 when the point is not located.
    */
   Number point_value(unsigned int var, const Point & p,
-                     const bool insist_on_success = true) const;
+                     const bool insist_on_success = true,
+                     const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * \returns The value of the solution variable \p var at the physical
-   * point \p p contained in local Elem \p e
+   * point \p p contained in local Elem \p e, using the degree of
+   * freedom coefficients in \p sol (or in \p current_local_solution
+   * if \p sol is left null).
    *
    * This version of point_value can be run in serial, but assumes \p e is in
    * the local mesh partition or is algebraically ghosted.
    */
-  Number point_value(unsigned int var, const Point & p, const Elem & e) const;
+  Number point_value(unsigned int var, const Point & p, const Elem & e,
+                     const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * Calls the version of point_value() which takes a reference.
@@ -1598,17 +1638,27 @@ public:
   Number point_value(unsigned int var, const Point & p, const Elem * e) const;
 
   /**
+   * Calls the parallel version of point_value().
+   * This function exists only to prevent people from accidentally
+   * calling the version of point_value() that has a boolean third
+   * argument, which would result in incorrect output.
+   */
+  Number point_value(unsigned int var, const Point & p, const NumericVector<Number> * sol) const;
+
+  /**
    * \returns The gradient of the solution variable \p var at the physical
    * point \p p in the mesh, similarly to point_value.
    */
   Gradient point_gradient(unsigned int var, const Point & p,
-                          const bool insist_on_success = true) const;
+                          const bool insist_on_success = true,
+                          const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * \returns The gradient of the solution variable \p var at the physical
    * point \p p in local Elem \p e in the mesh, similarly to point_value.
    */
-  Gradient point_gradient(unsigned int var, const Point & p, const Elem & e) const;
+  Gradient point_gradient(unsigned int var, const Point & p, const Elem & e,
+                          const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * Calls the version of point_gradient() which takes a reference.
@@ -1619,18 +1669,28 @@ public:
   Gradient point_gradient(unsigned int var, const Point & p, const Elem * e) const;
 
   /**
+   * Calls the parallel version of point_gradient().
+   * This function exists only to prevent people from accidentally
+   * calling the version of point_gradient() that has a boolean third
+   * argument, which would result in incorrect output.
+   */
+  Gradient point_gradient(unsigned int var, const Point & p, const NumericVector<Number> * sol) const;
+
+  /**
    * \returns The second derivative tensor of the solution variable \p var
    * at the physical point \p p in the mesh, similarly to point_value.
    */
   Tensor point_hessian(unsigned int var, const Point & p,
-                       const bool insist_on_success = true) const;
+                       const bool insist_on_success = true,
+                       const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * \returns The second derivative tensor of the solution variable \p var
    * at the physical point \p p in local Elem \p e in the mesh, similarly to
    * point_value.
    */
-  Tensor point_hessian(unsigned int var, const Point & p, const Elem & e) const;
+  Tensor point_hessian(unsigned int var, const Point & p, const Elem & e,
+                       const NumericVector<Number> * sol = nullptr) const;
 
   /**
    * Calls the version of point_hessian() which takes a reference.
@@ -1639,6 +1699,15 @@ public:
    * would result in unnecessary PointLocator calls.
    */
   Tensor point_hessian(unsigned int var, const Point & p, const Elem * e) const;
+
+  /**
+   * Calls the parallel version of point_hessian().
+   * This function exists only to prevent people from accidentally
+   * calling the version of point_hessian() that has a boolean third
+   * argument, which would result in incorrect output.
+   */
+  Tensor point_hessian(unsigned int var, const Point & p, const NumericVector<Number> * sol) const;
+
 
   /**
    * Fills the std::set with the degrees of freedom on the local
@@ -1653,6 +1722,18 @@ public:
    */
   void zero_variable (NumericVector<Number> & v, unsigned int var_num) const;
 
+  /**
+   * Setter and getter functions for project_with_constraints boolean
+   */
+  bool get_project_with_constraints()
+  {
+    return project_with_constraints;
+  }
+
+  void set_project_with_constraints(bool _project_with_constraints)
+  {
+    project_with_constraints = _project_with_constraints;
+  }
 
   /**
    * \returns A writable reference to a boolean that determines if this system
@@ -1675,6 +1756,89 @@ public:
   void projection_matrix (SparseMatrix<Number> & proj_mat) const;
 #endif // LIBMESH_HAVE_METAPHYSICL
 
+  /**
+   * Matrix iterator typedefs.
+   */
+  typedef std::map<std::string, std::unique_ptr<SparseMatrix<Number>>>::iterator        matrices_iterator;
+  typedef std::map<std::string, std::unique_ptr<SparseMatrix<Number>>>::const_iterator  const_matrices_iterator;
+
+  /**
+   * Adds the additional matrix \p mat_name to this system.  Only
+   * allowed prior to \p assemble().  All additional matrices
+   * have the same sparsity pattern as the matrix used during
+   * solution.  When not \p System but the user wants to
+   * initialize the mayor matrix, then all the additional matrices,
+   * if existent, have to be initialized by the user, too.
+   *
+   * This non-template method will add a derived matrix type corresponding to
+   * the solver package. If the user wishes to specify the matrix type to add,
+   * use the templated \p add_matrix method instead
+   *
+   * @param mat_name A name for the matrix
+   * @param type The serial/parallel/ghosted type of the matrix
+   * @param mat_build_type The matrix type to build
+   *
+   */
+  SparseMatrix<Number> & add_matrix (const std::string & mat_name,
+                                     ParallelType type = PARALLEL,
+                                     MatrixBuildType mat_build_type = MatrixBuildType::AUTOMATIC);
+
+  /**
+  * Adds the additional matrix \p mat_name to this system.  Only
+  * allowed prior to \p assemble().  All additional matrices
+  * have the same sparsity pattern as the matrix used during
+  * solution.  When not \p System but the user wants to
+  * initialize the mayor matrix, then all the additional matrices,
+  * if existent, have to be initialized by the user, too.
+  *
+  * This method will create add a derived matrix of type
+  * \p MatrixType<Number>. One can use the non-templated \p add_matrix method to
+  * add a matrix corresponding to the default solver package
+  *
+  * @param mat_name A name for the matrix
+  * @param type The serial/parallel/ghosted type of the matrix
+  */
+  template <template <typename> class>
+  SparseMatrix<Number> & add_matrix (const std::string & mat_name, ParallelType = PARALLEL);
+
+  /**
+   * Removes the additional matrix \p mat_name from this system
+   */
+  void remove_matrix(const std::string & mat_name);
+
+  /**
+   * \returns \p true if this \p System has a matrix associated with the
+   * given name, \p false otherwise.
+   */
+  inline bool have_matrix (const std::string & mat_name) const { return _matrices.count(mat_name); };
+
+  /**
+   * \returns A const pointer to this system's additional matrix
+   * named \p mat_name, or \p nullptr if no matrix by that name
+   * exists.
+   */
+  const SparseMatrix<Number> * request_matrix (const std::string & mat_name) const;
+
+  /**
+   * \returns A writable pointer to this system's additional matrix
+   * named \p mat_name, or \p nullptr if no matrix by that name
+   * exists.
+   */
+  SparseMatrix<Number> * request_matrix (const std::string & mat_name);
+
+  /**
+   * \returns A const reference to this system's matrix
+   * named \p mat_name.
+   */
+  const SparseMatrix<Number> & get_matrix (const std::string & mat_name) const;
+
+  /**
+   * \returns A writable reference to this system's matrix
+   * named \p mat_name.
+   */
+  SparseMatrix<Number> & get_matrix (const std::string & mat_name);
+
+
 protected:
 
   /**
@@ -1684,6 +1848,23 @@ protected:
    * function so that all required storage will be available.
    */
   virtual void init_data ();
+
+  /**
+   * Insertion point for adding matrices in derived classes
+   * before init_matrices() is called.
+   */
+  virtual void add_matrices() {}
+
+  /**
+   * Initializes the matrices associated with this system.
+   */
+  virtual void init_matrices ();
+
+  /**
+   * \returns Whether or not matrices can still be added without
+   * expensive per-matrix initialization.
+   */
+  bool can_add_matrices() const { return !_matrices_initialized; }
 
   /**
    * Projects the vector defined on the old mesh onto the
@@ -1707,22 +1888,23 @@ protected:
                        NumericVector<Number> &,
                        int is_adjoint = -1) const;
 
+  /*
+   * If we have e.g. a element space constrained by spline values, we
+   * can directly project only on the constrained basis; to get
+   * consistent constraining values we have to solve for them.
+   *
+   * Constrain the new vector using the requested adjoint rather than
+   * primal constraints if is_adjoint is non-negative.
+   */
+  void solve_for_unconstrained_dofs (NumericVector<Number> &,
+                                     int is_adjoint = -1) const;
+
 private:
   /**
-   * This isn't a copyable object, so let's make sure nobody tries.
-   *
-   * We won't even bother implementing this; we'll just make sure that
-   * the compiler doesn't implement a default.
+   * Helper function to keep DofMap forward declarable in system.h
    */
-  System (const System &);
-
-  /**
-   * This isn't a copyable object, so let's make sure nobody tries.
-   *
-   * We won't even bother implementing this; we'll just make sure that
-   * the compiler doesn't implement a default.
-   */
-  System & operator=(const System &);
+  void late_matrix_init(SparseMatrix<Number> & mat,
+                        ParallelType type);
 
   /**
    * Finds the discrete norm for the entries in the vector
@@ -1932,7 +2114,7 @@ private:
    * vectors.  All the vectors in this map will be distributed
    * in the same way as the solution vector.
    */
-  std::map<std::string, NumericVector<Number> * > _vectors;
+  std::map<std::string, std::unique_ptr<NumericVector<Number>>> _vectors;
 
   /**
    * Holds true if a vector by that name should be projected
@@ -1950,6 +2132,21 @@ private:
    * Holds the type of a vector
    */
   std::map<std::string, ParallelType> _vector_types;
+
+  /**
+   * Some systems need an arbitrary number of matrices.
+   */
+  std::map<std::string, std::unique_ptr<SparseMatrix<Number>>> _matrices;
+
+  /**
+   * Holds the types of the matrices
+   */
+  std::map<std::string, ParallelType> _matrix_types;
+
+  /**
+   * \p false when additional matrices being added require initialization, \p true otherwise.
+   */
+  bool _matrices_initialized;
 
   /**
    * Holds true if the solution vector should be projected
@@ -2007,6 +2204,11 @@ private:
    * \p true, then \p EquationSystems::write will ignore this system.
    */
   bool _hide_output;
+
+  /**
+   * Do we want to apply constraints while projecting vectors ?
+   */
+  bool project_with_constraints;
 };
 
 
@@ -2236,12 +2438,6 @@ unsigned int System::n_vectors () const
 }
 
 inline
-unsigned int System::n_matrices () const
-{
-  return 0;
-}
-
-inline
 System::vectors_iterator System::vectors_begin ()
 {
   return _vectors.begin();
@@ -2346,6 +2542,34 @@ System::qoi_parameter_hessian_vector_product(const QoISet &,
                                              SensitivityData &)
 {
   libmesh_not_implemented();
+}
+
+inline
+unsigned int System::n_matrices () const
+{
+  return cast_int<unsigned int>(_matrices.size());
+}
+
+template <template <typename> class MatrixType>
+inline
+SparseMatrix<Number> &
+System::add_matrix (const std::string & mat_name,
+                    const ParallelType type)
+{
+  // Return the matrix if it is already there.
+  if (this->have_matrix(mat_name))
+    return *(_matrices[mat_name]);
+
+  // Otherwise build the matrix to return.
+  auto pr = _matrices.emplace(mat_name, libmesh_make_unique<MatrixType<Number>>(this->comm()));
+  _matrix_types.emplace(mat_name, type);
+
+  SparseMatrix<Number> & mat = *(pr.first->second);
+
+  // Initialize it first if we've already initialized the others.
+  this->late_matrix_init(mat, type);
+
+  return mat;
 }
 
 
